@@ -14,17 +14,30 @@
     <module>orchid</module>
   </modules>
 
-  <parent>
+  <!--parent>
     <groupId>org.sonatype.oss</groupId>
     <artifactId>oss-parent</artifactId>
     <version>7</version>
-  </parent>
+  </parent-->
 
   <scm>
     <connection>scm:git:https://github.com/bitcoinj/bitcoinj</connection>
     <developerConnection>scm:git:https://github.com/bitcoinj/bitcoinj</developerConnection>
     <url>scm:git:https://github.com/bitcoinj/bitcoinj</url>
   </scm>
+
+  <distributionManagement>
+        <repository>
+            <id>strawpay-libs-releases</id>
+            <name>strawpay-releases</name>
+            <url>http://strawpay.artifactoryonline.com/strawpay/libs-releases-local</url>
+        </repository>
+        <snapshotRepository>
+            <id>strawpay-libs-snapshots</id>
+            <name>strawpay-snapshots</name>
+            <url>http://strawpay.artifactoryonline.com/strawpay/libs-snapshots-local</url>
+        </snapshotRepository>
+    </distributionManagement>
 
   <name>bitcoinj Parent</name>
   <description>Provides the common configuration for the BitCoinJ modules</description>
