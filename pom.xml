@@ -50,16 +50,18 @@
     </mailingList>
   </mailingLists>
 
-  <distributionManagement>
-    <snapshotRepository>
-      <id>ossrh</id>
-      <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-    </snapshotRepository>
-    <repository>
-      <id>ossrh</id>
-      <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
-    </repository>
-  </distributionManagement>
+    <distributionManagement>
+        <repository>
+            <id>strawpay-libs-releases</id>
+            <name>strawpay-releases</name>
+            <url>https://strawpay.artifactoryonline.com/strawpay/libs-releases-local</url>
+        </repository>
+        <snapshotRepository>
+            <id>strawpay-libs-snapshots</id>
+            <name>strawpay-snapshots</name>
+            <url>https://strawpay.artifactoryonline.com/strawpay/libs-snapshots-local</url>
+        </snapshotRepository>
+    </distributionManagement>
 
   <!-- Common build plugin configuration -->
   <build>
