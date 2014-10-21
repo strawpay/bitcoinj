@@ -3969,6 +3969,20 @@ public class Wallet extends BaseTaggableObject implements Serializable, BlockCha
         }
     }
 
+    /** 
+     * Deserialize the wallet extension with the supplied data, while
+     * keeping this wallet locked. This keeps the lock order Wallet ->
+     * Extension that is required to deadlock freedom.
+     */ 
+    public void deserializeWalletExtension(WalletExtension extension, byte[] data) throws Exception {
+        lock.lock();
+        try {
+            extension.deserializeWalletExtension(this, data);
+        } finally {
+            lock.unlock();
+        }        
+    }
+    
     @Override
     public synchronized void setTag(String tag, ByteString value) {
         super.setTag(tag, value);
