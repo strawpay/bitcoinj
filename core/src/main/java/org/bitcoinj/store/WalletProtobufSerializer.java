@@ -513,8 +513,7 @@ public class WalletProtobufSerializer {
             } else {
                 log.info("Loading wallet extension {}", id);
                 try {
-                    wallet.deserializeWalletExtension(extension, extProto.getData().toByteArray());
-                    wallet.addOrGetExistingExtension(extension);
+                    wallet.deserializeExtension(extension, extProto.getData().toByteArray());
                 } catch (Exception e) {
                     if (extProto.getMandatory() && requireMandatoryExtensions) {
                         log.error("Error whilst reading extension {}, failing to read wallet", id, e);

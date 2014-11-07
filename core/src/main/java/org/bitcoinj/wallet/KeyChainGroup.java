@@ -68,10 +68,11 @@ public class KeyChainGroup implements KeyBag {
 
     private BasicKeyChain basic;
     private NetworkParameters params;
-    private final LinkedList<DeterministicKeyChain> chains;
+    protected final LinkedList<DeterministicKeyChain> chains;
+    // currentKeys is used for normal, non-multisig/married wallets. currentAddresses is used when we're handing out
+    // P2SH addresses. They're mutually exclusive.
     private final EnumMap<KeyChain.KeyPurpose, DeterministicKey> currentKeys;
-
-    private EnumMap<KeyChain.KeyPurpose, Address> currentAddresses;
+    private final EnumMap<KeyChain.KeyPurpose, Address> currentAddresses;
     @Nullable private KeyCrypter keyCrypter;
     private int lookaheadSize = -1;
     private int lookaheadThreshold = -1;
@@ -358,6 +359,22 @@ public class KeyChainGroup implements KeyBag {
         return null;
     }
 
+    public void markP2SHAddressAsUsed(Address address) {
+        checkState(isMarried());
+        checkArgument(address.isP2SHAddress());
+        RedeemData data = findRedeemDataFromScriptHash(address.getHash160());
+        if (data == null)
+            return;   // Not our P2SH address.
+        for (ECKey key : data.keys) {
+            for (DeterministicKeyChain chain : chains) {
+                DeterministicKey k = chain.findKeyFromPubKey(key.getPubKey());
+                if (k == null) continue;
+                chain.markKeyAsUsed(k);
+                maybeMarkCurrentAddressAsUsed(address);
+            }
+        }
+    }
+
     @Nullable
     @Override
     public ECKey findKeyFromPubHash(byte[] pubkeyHash) {
@@ -385,12 +402,27 @@ public class KeyChainGroup implements KeyBag {
         }
     }
 
+    /** If the given P2SH address is "current", advance it to a new one. */
+    private void maybeMarkCurrentAddressAsUsed(Address address) {
+        checkState(isMarried());
+        checkArgument(address.isP2SHAddress());
+        for (Map.Entry<KeyChain.KeyPurpose, Address> entry : currentAddresses.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().equals(address)) {
+                log.info("Marking P2SH address as used: {}", address);
+                currentAddresses.put(entry.getKey(), freshAddress(entry.getKey()));
+                return;
+            }
+        }
+    }
+
     /** If the given key is "current", advance the current key to a new one. */
     private void maybeMarkCurrentKeyAsUsed(DeterministicKey key) {
+        // It's OK for currentKeys to be empty here: it means we're a married wallet and the key may be a part of a
+        // rotating chain.
         for (Map.Entry<KeyChain.KeyPurpose, DeterministicKey> entry : currentKeys.entrySet()) {
             if (entry.getValue() != null && entry.getValue().equals(key)) {
                 log.info("Marking key as used: {}", key);
-                currentKeys.put(entry.getKey(), null);
+                currentKeys.put(entry.getKey(), freshKey(entry.getKey()));
                 return;
             }
         }
@@ -630,12 +662,14 @@ public class KeyChainGroup implements KeyBag {
      *         and you should provide the users encryption key.
      * @return the DeterministicKeyChain that was created by the upgrade.
      */
-    public DeterministicKeyChain upgradeToDeterministic(long keyRotationTimeSecs, @Nullable KeyParameter aesKey) throws DeterministicUpgradeRequiresPassword {
-        checkState(chains.isEmpty());
+    public DeterministicKeyChain upgradeToDeterministic(long keyRotationTimeSecs, @Nullable KeyParameter aesKey) throws DeterministicUpgradeRequiresPassword, AllRandomKeysRotating {
         checkState(basic.numKeys() > 0);
         checkArgument(keyRotationTimeSecs >= 0);
-        ECKey keyToUse = basic.findOldestKeyAfter(keyRotationTimeSecs);
-        checkArgument(keyToUse != null, "All keys are considered rotating, so we cannot upgrade deterministically.");
+        // Subtract one because the key rotation time might have been set to the creation time of the first known good
+        // key, in which case, that's the one we want to find.
+        ECKey keyToUse = basic.findOldestKeyAfter(keyRotationTimeSecs - 1);
+        if (keyToUse == null)
+            throw new AllRandomKeysRotating();
 
         if (keyToUse.isEncrypted()) {
             if (aesKey == null) {
@@ -658,7 +692,12 @@ public class KeyChainGroup implements KeyBag {
             throw new IllegalStateException("AES Key was provided but wallet is not encrypted.");
         }
 
-        log.info("Auto-upgrading pre-HD wallet using oldest non-rotating private key");
+        if (chains.isEmpty()) {
+            log.info("Auto-upgrading pre-HD wallet to HD!");
+        } else {
+            log.info("Wallet with existing HD chain is being re-upgraded due to change in key rotation time.");
+        }
+        log.info("Instantiating new HD chain using oldest non-rotating private key (address: {})", keyToUse.toAddress(params));
         byte[] entropy = checkNotNull(keyToUse.getSecretBytes());
         // Private keys should be at least 128 bits long.
         checkState(entropy.length >= DeterministicSeed.DEFAULT_SEED_ENTROPY_BITS / 8);
