@@ -29,6 +29,7 @@ import org.bitcoin.paymentchannel.Protos;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
 import java.io.ByteArrayInputStream;
@@ -177,7 +178,8 @@ public class ChannelConnectionTest extends TestWithWallet {
         q.take().assertPair(amount, null);
         for (String info : new String[] {null, "one", "two"} ) {
             final ByteString bytes = (info==null) ? null :ByteString.copyFromUtf8(info);
-            final PaymentIncrementAck ack = client.incrementPayment(CENT, bytes).get();
+            final KeyParameter userKey = null;
+            final PaymentIncrementAck ack = client.incrementPayment(CENT, bytes, userKey).get();
             if (info != null) {
                 final ByteString ackInfo = ack.getInfo();
                 assertNotNull("Ack info is null", ackInfo);
