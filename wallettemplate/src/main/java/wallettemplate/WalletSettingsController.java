@@ -1,8 +1,8 @@
 package wallettemplate;
 
-import com.google.bitcoin.crypto.MnemonicCode;
-import com.google.bitcoin.wallet.DeterministicSeed;
-import com.google.common.base.Joiner;
+import org.bitcoinj.core.Utils;
+import org.bitcoinj.crypto.MnemonicCode;
+import org.bitcoinj.wallet.DeterministicSeed;
 import com.google.common.base.Splitter;
 import com.google.common.util.concurrent.Service;
 import javafx.application.Platform;
@@ -68,7 +68,7 @@ public class WalletSettingsController {
         // Set the mnemonic seed words.
         final List<String> mnemonicCode = seed.getMnemonicCode();
         checkNotNull(mnemonicCode);    // Already checked for encryption.
-        String origWords = Joiner.on(" ").join(mnemonicCode);
+        String origWords = Utils.join(mnemonicCode);
         wordsArea.setText(origWords);
 
         // Validate words as they are being typed.
@@ -153,7 +153,7 @@ public class WalletSettingsController {
         Main.instance.controller.restoreFromSeedAnimation();
 
         long birthday = datePicker.getValue().atStartOfDay().toEpochSecond(ZoneOffset.UTC);
-        DeterministicSeed seed = new DeterministicSeed(Splitter.on(' ').splitToList(wordsArea.getText()), "", birthday);
+        DeterministicSeed seed = new DeterministicSeed(Splitter.on(' ').splitToList(wordsArea.getText()), null, "", birthday);
         // Shut down bitcoinj and restart it with the new seed.
         Main.bitcoin.addListener(new Service.Listener() {
             @Override

@@ -1,6 +1,7 @@
 package wallettemplate;
 
-import com.google.bitcoin.crypto.KeyCrypterScrypt;
+import javafx.application.Platform;
+import org.bitcoinj.crypto.KeyCrypterScrypt;
 import com.google.common.primitives.Longs;
 import com.google.protobuf.ByteString;
 import javafx.beans.property.ReadOnlyObjectProperty;
@@ -43,6 +44,7 @@ public class WalletPasswordController {
 
     public void initialize() {
         progressMeter.setOpacity(0);
+        Platform.runLater(pass1::requestFocus);
     }
 
     @FXML void confirmClicked(ActionEvent event) {
@@ -56,8 +58,7 @@ public class WalletPasswordController {
         checkNotNull(keyCrypter);   // We should never arrive at this GUI if the wallet isn't actually encrypted.
         KeyDerivationTasks tasks = new KeyDerivationTasks(keyCrypter, password, getTargetTime()) {
             @Override
-            protected void onFinish(KeyParameter aesKey) {
-                super.onFinish(aesKey);
+            protected void onFinish(KeyParameter aesKey, int timeTakenMsec) {
                 checkGuiThread();
                 if (Main.bitcoin.wallet().checkAESKey(aesKey)) {
                     WalletPasswordController.this.aesKey.set(aesKey);

@@ -1,8 +1,8 @@
 package wallettemplate.controls;
 
-import com.google.bitcoin.core.Address;
-import com.google.bitcoin.core.AddressFormatException;
-import com.google.bitcoin.core.NetworkParameters;
+import org.bitcoinj.core.Address;
+import org.bitcoinj.core.AddressFormatException;
+import org.bitcoinj.core.NetworkParameters;
 import javafx.scene.Node;
 import javafx.scene.control.TextField;
 import wallettemplate.utils.TextFieldValidator;
@@ -36,7 +36,7 @@ public class BitcoinAddressValidator {
 
     private boolean testAddr(String text) {
         try {
-            new Address(params, text);
+            Address.fromBase58(params, text);
             return true;
         } catch (AddressFormatException e) {
             return false;

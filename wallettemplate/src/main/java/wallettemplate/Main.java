@@ -1,12 +1,13 @@
 package wallettemplate;
 
-import com.google.bitcoin.core.NetworkParameters;
-import com.google.bitcoin.kits.WalletAppKit;
-import com.google.bitcoin.params.MainNetParams;
-import com.google.bitcoin.params.RegTestParams;
-import com.google.bitcoin.utils.BriefLogFormatter;
-import com.google.bitcoin.utils.Threading;
-import com.google.bitcoin.wallet.DeterministicSeed;
+import com.google.common.util.concurrent.*;
+import javafx.scene.input.*;
+import org.bitcoinj.core.NetworkParameters;
+import org.bitcoinj.kits.WalletAppKit;
+import org.bitcoinj.params.*;
+import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.DeterministicSeed;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.fxml.FXMLLoader;
@@ -15,6 +16,7 @@ import javafx.scene.Scene;
 import javafx.scene.layout.Pane;
 import javafx.scene.layout.StackPane;
 import javafx.stage.Stage;
+import wallettemplate.controls.NotificationBarPane;
 import wallettemplate.utils.GuiUtils;
 import wallettemplate.utils.TextFieldValidator;
 
@@ -28,16 +30,28 @@ import static wallettemplate.utils.GuiUtils.*;
 public class Main extends Application {
     public static String APP_NAME = "WalletTemplate";
 
-    public static NetworkParameters params = RegTestParams.get();
+    public static NetworkParameters params = MainNetParams.get();
     public static WalletAppKit bitcoin;
     public static Main instance;
 
     private StackPane uiStack;
     private Pane mainUI;
-    public Controller controller;
+    public MainController controller;
+    public NotificationBarPane notificationBar;
+    public Stage mainWindow;
 
     @Override
     public void start(Stage mainWindow) throws Exception {
+        try {
+            realStart(mainWindow);
+        } catch (Throwable e) {
+            GuiUtils.crashAlert(e);
+            throw e;
+        }
+    }
+
+    private void realStart(Stage mainWindow) throws IOException {
+        this.mainWindow = mainWindow;
         instance = this;
         // Show the crash dialog for any exceptions that we don't handle and that hit the main loop.
         GuiUtils.handleCrashesOnThisThread();
@@ -48,17 +62,22 @@ public class Main extends Application {
             // AquaFx.style();
         }
 
-        // Load the GUI. The Controller class will be automagically created and wired up.
+        // Load the GUI. The MainController class will be automagically created and wired up.
         URL location = getClass().getResource("main.fxml");
         FXMLLoader loader = new FXMLLoader(location);
         mainUI = loader.load();
         controller = loader.getController();
-        // Configure the window with a StackPane so we can overlay things on top of the main UI.
-        uiStack = new StackPane(mainUI);
+        // Configure the window with a StackPane so we can overlay things on top of the main UI, and a
+        // NotificationBarPane so we can slide messages and progress bars in from the bottom. Note that
+        // ordering of the construction and connection matters here, otherwise we get (harmless) CSS error
+        // spew to the logs.
+        notificationBar = new NotificationBarPane(mainUI);
         mainWindow.setTitle(APP_NAME);
-        final Scene scene = new Scene(uiStack);
+        uiStack = new StackPane();
+        Scene scene = new Scene(uiStack);
         TextFieldValidator.configureScene(scene);   // Add CSS that we need.
         scene.getStylesheets().add(getClass().getResource("wallet.css").toString());
+        uiStack.getChildren().add(notificationBar);
         mainWindow.setScene(scene);
 
         // Make log output concise.
@@ -79,20 +98,27 @@ public class Main extends Application {
 
         mainWindow.show();
 
+        WalletSetPasswordController.estimateKeyDerivationTimeMsec();
+
+        bitcoin.addListener(new Service.Listener() {
+            @Override
+            public void failed(Service.State from, Throwable failure) {
+                GuiUtils.crashAlert(failure);
+            }
+        }, Platform::runLater);
         bitcoin.startAsync();
+
+        scene.getAccelerators().put(KeyCombination.valueOf("Shortcut+F"), () -> bitcoin.peerGroup().getDownloadPeer().close());
     }
 
     public void setupWalletKit(@Nullable DeterministicSeed seed) {
         // If seed is non-null it means we are restoring from backup.
-        bitcoin = new WalletAppKit(params, new File("."), APP_NAME) {
+        bitcoin = new WalletAppKit(params, new File("."), APP_NAME + "-" + params.getPaymentProtocolId()) {
             @Override
             protected void onSetupCompleted() {
                 // Don't make the user wait for confirmations for now, as the intention is they're sending it
                 // their own money!
                 bitcoin.wallet().allowSpendingUnconfirmedTransactions();
-                if (params != RegTestParams.get())
-                    bitcoin.peerGroup().setMaxConnections(11);
-                bitcoin.peerGroup().setBloomFilterFalsePositiveRate(0.00001);
                 Platform.runLater(controller::onBitcoinSetup);
             }
         };
@@ -100,14 +126,10 @@ public class Main extends Application {
         // or progress widget to keep the user engaged whilst we initialise, but we don't.
         if (params == RegTestParams.get()) {
             bitcoin.connectToLocalHost();   // You should run a regtest mode bitcoind locally.
-        } else if (params == MainNetParams.get()) {
-            // Checkpoints are block headers that ship inside our app: for a new user, we pick the last header
-            // in the checkpoints file and then download the rest from the network. It makes things much faster.
-            // Checkpoint files are made using the BuildCheckpoints tool and usually we have to download the
-            // last months worth or more (takes a few seconds).
-            bitcoin.setCheckpoints(getClass().getResourceAsStream("checkpoints"));
+        } else if (params == TestNet3Params.get()) {
             // As an example!
-            // bitcoin.useTor();
+            bitcoin.useTor();
+            // bitcoin.setDiscovery(new HttpDiscovery(params, URI.create("http://localhost:8080/peers"), ECKey.fromPublicOnly(BaseEncoding.base16().decode("02cba68cfd0679d10b186288b75a59f9132b1b3e222f6332717cb8c4eb2040f940".toUpperCase()))));
         }
         bitcoin.setDownloadListener(controller.progressBarUpdater())
                .setBlockingStartup(false)
