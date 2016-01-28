@@ -51,8 +51,8 @@ import static com.google.common.base.Preconditions.*;
  * <p>There are two subclasses of AbstractBlockChain that are useful: {@link BlockChain}, which is the simplest
  * class and implements <i>simplified payment verification</i>. This is a lightweight and efficient mode that does
  * not verify the contents of blocks, just their headers. A {@link FullPrunedBlockChain} paired with a
- * {@link org.bitcoinj.store.H2FullPrunedBlockStore} implements full verification, which is equivalent to the
- * original Satoshi client. To learn more about the alternative security models, please consult the articles on the
+ * {@link org.bitcoinj.store.H2FullPrunedBlockStore} implements full verification, which is equivalent to
+ * Bitcoin Core. To learn more about the alternative security models, please consult the articles on the
  * website.</p>
  *
  * <b>Theory</b>
@@ -113,10 +113,7 @@ public abstract class AbstractBlockChain {
             final boolean filtered = filteredTxHashes != null && filteredTxn != null;
             Preconditions.checkArgument((block.transactions == null && filtered)
                                         || (block.transactions != null && !filtered));
-            if (!shouldVerifyTransactions())
-                this.block = block.cloneAsHeader();
-            else
-                this.block = block;
+            this.block = block;
             this.filteredTxHashes = filteredTxHashes;
             this.filteredTxn = filteredTxn;
         }
@@ -169,7 +166,7 @@ public abstract class AbstractBlockChain {
      * have never been in use, or if the wallet has been loaded along with the BlockChain. Note that adding multiple
      * wallets is not well tested!
      */
-    public void addWallet(Wallet wallet) {
+    public final void addWallet(Wallet wallet) {
         addNewBestBlockListener(Threading.SAME_THREAD, wallet);
         addReorganizeListener(Threading.SAME_THREAD, wallet);
         addTransactionReceivedListener(Threading.SAME_THREAD, wallet);
@@ -231,7 +228,7 @@ public abstract class AbstractBlockChain {
     /**
      * Adds a {@link NewBestBlockListener} listener to the chain.
      */
-    public void addNewBestBlockListener(Executor executor, NewBestBlockListener listener) {
+    public final void addNewBestBlockListener(Executor executor, NewBestBlockListener listener) {
         newBestBlockListeners.add(new ListenerRegistration<NewBestBlockListener>(listener, executor));
     }
 
@@ -245,7 +242,7 @@ public abstract class AbstractBlockChain {
     /**
      * Adds a generic {@link ReorganizeListener} listener to the chain.
      */
-    public void addReorganizeListener(Executor executor, ReorganizeListener listener) {
+    public final void addReorganizeListener(Executor executor, ReorganizeListener listener) {
         reorganizeListeners.add(new ListenerRegistration<ReorganizeListener>(listener, executor));
     }
 
@@ -259,7 +256,7 @@ public abstract class AbstractBlockChain {
     /**
      * Adds a generic {@link TransactionReceivedInBlockListener} listener to the chain.
      */
-    public void addTransactionReceivedListener(Executor executor, TransactionReceivedInBlockListener listener) {
+    public final void addTransactionReceivedListener(Executor executor, TransactionReceivedInBlockListener listener) {
         transactionReceivedListeners.add(new ListenerRegistration<TransactionReceivedInBlockListener>(listener, executor));
     }
 
@@ -361,7 +358,7 @@ public abstract class AbstractBlockChain {
             } catch (BlockStoreException e1) {
                 throw new RuntimeException(e1);
             }
-            throw new VerificationException("Could not verify block " + block.getHashAsString() + "\n" +
+            throw new VerificationException("Could not verify block:\n" +
                     block.toString(), e);
         }
     }
@@ -860,7 +857,7 @@ public abstract class AbstractBlockChain {
     /**
      * @return the height of the best known chain, convenience for <tt>getChainHead().getHeight()</tt>.
      */
-    public int getBestChainHeight() {
+    public final int getBestChainHeight() {
         return getChainHead().getHeight();
     }
 
@@ -920,7 +917,7 @@ public abstract class AbstractBlockChain {
                 StoredBlock prev = getStoredBlockInCurrentScope(orphanBlock.block.getPrevBlockHash());
                 if (prev == null) {
                     // This is still an unconnected/orphan block.
-                    log.debug("  but it is not connectable right now");
+                    log.debug("Orphan block {} is not connectable right now", orphanBlock.block.getHash());
                     continue;
                 }
                 // Otherwise we can connect it now.

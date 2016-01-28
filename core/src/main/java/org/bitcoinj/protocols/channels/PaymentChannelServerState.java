@@ -31,6 +31,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.util.Arrays;
+import java.util.Locale;
 
 import static com.google.common.base.Preconditions.*;
 
@@ -252,8 +253,7 @@ public class PaymentChannelServerState {
 
             @Override public void onFailure(Throwable throwable) {
                 // Couldn't broadcast the transaction for some reason.
-                log.error(throwable.toString());
-                throwable.printStackTrace();
+                log.error("Broadcast multisig contract failed", throwable);
                 state = State.ERROR;
                 future.setException(throwable);
             }
@@ -399,7 +399,7 @@ public class PaymentChannelServerState {
             feePaidForPayment = req.tx.getFee();
             log.info("Calculated fee is {}", feePaidForPayment);
             if (feePaidForPayment.compareTo(bestValueToMe) > 0) {
-                final String msg = String.format("Had to pay more in fees (%s) than the channel was worth (%s)",
+                final String msg = String.format(Locale.US, "Had to pay more in fees (%s) than the channel was worth (%s)",
                         feePaidForPayment, bestValueToMe);
                 throw new InsufficientMoneyException(feePaidForPayment.subtract(bestValueToMe), msg);
             }
@@ -427,8 +427,7 @@ public class PaymentChannelServerState {
             }
 
             @Override public void onFailure(Throwable throwable) {
-                log.error("Failed to settle channel, could not broadcast: {}", throwable.toString());
-                throwable.printStackTrace();
+                log.error("Failed to settle channel, could not broadcast", throwable);
                 state = State.ERROR;
                 closedFuture.setException(throwable);
             }

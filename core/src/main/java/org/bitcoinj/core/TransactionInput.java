@@ -21,6 +21,8 @@ import org.bitcoinj.script.Script;
 import org.bitcoinj.wallet.DefaultRiskAnalysis;
 import org.bitcoinj.wallet.KeyBag;
 import org.bitcoinj.wallet.RedeemData;
+
+import com.google.common.base.Joiner;
 import com.google.common.base.Objects;
 
 import javax.annotation.Nullable;
@@ -40,12 +42,13 @@ import static com.google.common.base.Preconditions.checkNotNull;
  * to the outputs of another. The exceptions are coinbase transactions, which create new coins.
  */
 public class TransactionInput extends ChildMessage {
+    /** Magic sequence number that indicates there is no sequence number. */
     public static final long NO_SEQUENCE = 0xFFFFFFFFL;
-    public static final byte[] EMPTY_ARRAY = new byte[0];
+    private static final byte[] EMPTY_ARRAY = new byte[0];
+    // Magic outpoint index that indicates the input is in fact unconnected.
+    private static final long UNCONNECTED = 0xFFFFFFFFL;
 
-    // Allows for altering transactions after they were broadcast. Tx replacement is currently disabled in the C++
-    // client so this is always the UINT_MAX.
-    // TODO: Document this in more detail and build features that use it.
+    // Allows for altering transactions after they were broadcast. Values below NO_SEQUENCE-1 mean it can be altered.
     private long sequence;
     // Data needed to connect to the output of the transaction we're gathering coins from.
     private TransactionOutPoint outpoint;
@@ -64,7 +67,7 @@ public class TransactionInput extends ChildMessage {
      * Creates an input that connects to nothing - used only in creation of coinbase transactions.
      */
     public TransactionInput(NetworkParameters params, @Nullable Transaction parentTransaction, byte[] scriptBytes) {
-        this(params, parentTransaction, scriptBytes, new TransactionOutPoint(params, NO_SEQUENCE, (Transaction) null));
+        this(params, parentTransaction, scriptBytes, new TransactionOutPoint(params, UNCONNECTED, (Transaction) null));
     }
 
     public TransactionInput(NetworkParameters params, @Nullable Transaction parentTransaction, byte[] scriptBytes,
@@ -190,8 +193,7 @@ public class TransactionInput extends ChildMessage {
      * Sequence numbers allow participants in a multi-party transaction signing protocol to create new versions of the
      * transaction independently of each other. Newer versions of a transaction can replace an existing version that's
      * in nodes memory pools if the existing version is time locked. See the Contracts page on the Bitcoin wiki for
-     * examples of how you can use this feature to build contract protocols. Note that as of 2012 the tx replacement
-     * feature is disabled so sequence numbers are unusable.
+     * examples of how you can use this feature to build contract protocols.
      */
     public long getSequenceNumber() {
         return sequence;
@@ -201,8 +203,7 @@ public class TransactionInput extends ChildMessage {
      * Sequence numbers allow participants in a multi-party transaction signing protocol to create new versions of the
      * transaction independently of each other. Newer versions of a transaction can replace an existing version that's
      * in nodes memory pools if the existing version is time locked. See the Contracts page on the Bitcoin wiki for
-     * examples of how you can use this feature to build contract protocols. Note that as of 2012 the tx replacement
-     * feature is disabled so sequence numbers are unusable.
+     * examples of how you can use this feature to build contract protocols.
      */
     public void setSequenceNumber(long sequence) {
         unCache();
@@ -225,6 +226,11 @@ public class TransactionInput extends ChildMessage {
      */
     public byte[] getScriptBytes() {
         return scriptBytes;
+    }
+
+    /** Clear input scripts, e.g. in preparation for signing. */
+    public void clearScriptBytes() {
+        setScriptBytes(TransactionInput.EMPTY_ARRAY);
     }
 
     /**
@@ -253,18 +259,6 @@ public class TransactionInput extends ChildMessage {
     @Nullable
     public Coin getValue() {
         return value;
-    }
-
-    /**
-     * Returns a human readable debug string.
-     */
-    @Override
-    public String toString() {
-        try {
-            return isCoinBase() ? "TxIn: COINBASE" : "TxIn for [" + outpoint + "]: " + getScriptSig();
-        } catch (ScriptException e) {
-            throw new RuntimeException(e);
-        }
     }
 
     public enum ConnectionResult {
@@ -382,6 +376,14 @@ public class TransactionInput extends ChildMessage {
     }
 
     /**
+     * Returns whether this input will cause a transaction to opt into the
+     * <a href="https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki">full replace-by-fee </a> semantics.
+     */
+    public boolean isOptInFullRBF() {
+        return sequence < NO_SEQUENCE - 1;
+    }
+
+    /**
      * For a connected transaction, runs the script against the connected pubkey and verifies they are correct.
      * @throws ScriptException if the script did not verify.
      * @throws VerificationException If the outpoint doesn't match the given output.
@@ -424,6 +426,16 @@ public class TransactionInput extends ChildMessage {
         return getOutpoint().getConnectedOutput();
     }
 
+    /**
+     * Returns the connected transaction, assuming the input was connected with
+     * {@link TransactionInput#connect(TransactionOutput)} or variants at some point. If it wasn't connected, then
+     * this method returns null.
+     */
+    @Nullable
+    public Transaction getConnectedTransaction() {
+        return getOutpoint().fromTx;
+    }
+
     /** Returns a copy of the input detached from its containing transaction, if need be. */
     public TransactionInput duplicateDetached() {
         return new TransactionInput(params, null, bitcoinSerialize(), 0);
@@ -452,5 +464,27 @@ public class TransactionInput extends ChildMessage {
     @Override
     public int hashCode() {
         return Objects.hashCode(sequence, outpoint, Arrays.hashCode(scriptBytes));
+    }
+
+    /**
+     * Returns a human readable debug string.
+     */
+    @Override
+    public String toString() {
+        StringBuilder s = new StringBuilder("TxIn");
+        try {
+            if (isCoinBase()) {
+                s.append(": COINBASE");
+            } else {
+                s.append(" for [").append(outpoint).append("]: ").append(getScriptSig());
+                String flags = Joiner.on(", ").skipNulls().join(hasSequence() ? "has sequence" : null,
+                        isOptInFullRBF() ? "opts into full RBF" : null);
+                if (!flags.isEmpty())
+                    s.append(" (").append(flags).append(')');
+            }
+            return s.toString();
+        } catch (ScriptException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

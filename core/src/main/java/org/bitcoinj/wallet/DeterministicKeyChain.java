@@ -1,5 +1,6 @@
 /**
  * Copyright 2014 The bitcoinj developers.
+ * Copyright 2015 Andreas Schildbach
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +26,7 @@ import org.bitcoinj.script.Script;
 import org.bitcoinj.store.UnreadableWalletException;
 import org.bitcoinj.utils.Threading;
 
+import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
@@ -526,7 +528,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
         byte[] rederived = HDKeyDerivation.deriveChildKeyBytesFromPublic(parent, k.getChildNumber(), HDKeyDerivation.PublicDeriveMode.WITH_INVERSION).keyBytes;
         byte[] actual = k.getPubKey();
         if (!Arrays.equals(rederived, actual))
-            throw new IllegalStateException(String.format("Bit-flip check failed: %s vs %s", Arrays.toString(rederived), Arrays.toString(actual)));
+            throw new IllegalStateException(String.format(Locale.US, "Bit-flip check failed: %s vs %s", Arrays.toString(rederived), Arrays.toString(actual)));
     }
 
     private void addToBasicChain(DeterministicKey key) {
@@ -1173,7 +1175,7 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
                 needed, parent.getPathAsString(), issued, lookaheadSize, lookaheadThreshold, numChildren);
 
         List<DeterministicKey> result  = new ArrayList<DeterministicKey>(needed);
-        long now = System.currentTimeMillis();
+        final Stopwatch watch = Stopwatch.createStarted();
         int nextChild = numChildren;
         for (int i = 0; i < needed; i++) {
             DeterministicKey key = HDKeyDerivation.deriveThisOrNextChildKey(parent, nextChild);
@@ -1182,7 +1184,8 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
             result.add(key);
             nextChild = key.getChildNumber().num() + 1;
         }
-        log.info("Took {} msec", System.currentTimeMillis() - now);
+        watch.stop();
+        log.info("Took {}", watch);
         return result;
     }
 
@@ -1328,19 +1331,19 @@ public class DeterministicKeyChain implements EncryptableKeyChain {
         final StringBuilder builder2 = new StringBuilder();
         if (seed != null) {
             if (seed.isEncrypted()) {
-                builder2.append(String.format("Seed is encrypted%n"));
+                builder2.append(String.format(Locale.US, "Seed is encrypted%n"));
             } else if (includePrivateKeys) {
                 final List<String> words = seed.getMnemonicCode();
                 builder2.append(
-                        String.format("Seed as words: %s%nSeed as hex:   %s%n", Utils.join(words),
+                        String.format(Locale.US, "Seed as words: %s%nSeed as hex:   %s%n", Utils.join(words),
                                 seed.toHexString())
                 );
             }
-            builder2.append(String.format("Seed birthday: %d  [%s]%n", seed.getCreationTimeSeconds(),
+            builder2.append(String.format(Locale.US, "Seed birthday: %d  [%s]%n", seed.getCreationTimeSeconds(),
                     Utils.dateTimeFormat(seed.getCreationTimeSeconds() * 1000)));
         }
         final DeterministicKey watchingKey = getWatchingKey();
-        builder2.append(String.format("Key to watch:  %s%n", watchingKey.serializePubB58(params)));
+        builder2.append(String.format(Locale.US, "Key to watch:  %s%n", watchingKey.serializePubB58(params)));
         formatAddresses(includePrivateKeys, params, builder2);
         return builder2.toString();
     }

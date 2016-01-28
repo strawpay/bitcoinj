@@ -17,6 +17,7 @@
 
 package org.bitcoinj.core;
 
+import com.google.common.base.Stopwatch;
 import com.google.common.collect.*;
 import com.google.common.net.*;
 import com.google.common.util.concurrent.*;
@@ -507,7 +508,7 @@ public class PeerGroupTest extends TestWithPeerGroup {
             }
         });
         // connect to peer but don't do handshake
-        long start = System.currentTimeMillis(); // before connection so we don't get elapsed < timeout
+        final Stopwatch watch = Stopwatch.createStarted(); // before connection so we don't get elapsed < timeout
         connectPeerWithoutVersionExchange(0);
         // wait for disconnect (plus a bit more, in case test server is overloaded)
         try {
@@ -516,9 +517,9 @@ public class PeerGroupTest extends TestWithPeerGroup {
             // the checks below suffice for this case too
         }
         // check things after disconnect
-        long end = System.currentTimeMillis();
+        watch.stop();
         assertFalse(peerConnectedFuture.isDone()); // should never have connected
-        assertTrue(end - start >= timeout); // should not disconnect before timeout
+        assertTrue(watch.elapsed(TimeUnit.MILLISECONDS) >= timeout); // should not disconnect before timeout
         assertTrue(peerDisconnectedFuture.isDone()); // but should disconnect eventually
     }
 
@@ -726,9 +727,9 @@ public class PeerGroupTest extends TestWithPeerGroup {
 
     @Test
     public void preferLocalPeer() throws IOException {
-        // Because we are using the same port (8333 or 18333) that is used by Satoshi client
+        // Because we are using the same port (8333 or 18333) that is used by Bitcoin Core
         // We have to consider 2 cases:
-        // 1. Test are executed on the same machine that is running full node / Satoshi client
+        // 1. Test are executed on the same machine that is running a full node
         // 2. Test are executed without any full node running locally
         // We have to avoid to connecting to real and external services in unit tests
         // So we skip this test in case we have already something running on port params.getPort()
@@ -800,13 +801,13 @@ public class PeerGroupTest extends TestWithPeerGroup {
 
         // Send the chain that doesn't have all the transactions in it. The blocks after the exhaustion point should all
         // be ignored.
-        int epoch = wallet.keyChainGroup.getCombinedKeyLookaheadEpochs();
+        int epoch = wallet.getKeyChainGroupCombinedKeyLookaheadEpochs();
         BloomFilter filter = new BloomFilter(params, p1.lastReceivedFilter.bitcoinSerialize());
         filterAndSend(p1, blocks, filter);
         Block exhaustionPoint = blocks.get(3);
         pingAndWait(p1);
 
-        assertNotEquals(epoch, wallet.keyChainGroup.getCombinedKeyLookaheadEpochs());
+        assertNotEquals(epoch, wallet.getKeyChainGroupCombinedKeyLookaheadEpochs());
         // 4th block was end of the lookahead zone and thus was discarded, so we got 3 blocks worth of money (50 each).
         assertEquals(Coin.FIFTY_COINS.multiply(3), wallet.getBalance());
         assertEquals(exhaustionPoint.getPrevBlockHash(), blockChain.getChainHead().getHeader().getHash());

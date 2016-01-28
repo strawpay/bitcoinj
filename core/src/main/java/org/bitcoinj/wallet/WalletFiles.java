@@ -21,6 +21,8 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.utils.*;
 import org.slf4j.*;
 
+import com.google.common.base.Stopwatch;
+
 import javax.annotation.*;
 import java.io.*;
 import java.util.concurrent.*;
@@ -63,6 +65,11 @@ public class WalletFiles {
         void onAfterAutoSave(File newlySavedFile);
     }
 
+    /**
+     * Initialize atomic and optionally delayed writing of the wallet file to disk. Note the initial wallet state isn't
+     * saved automatically. The {@link Wallet} calls {@link #saveNow()} or {@link #saveLater()} as wallet state changes,
+     * depending on the urgency of the changes.
+     */
     public WalletFiles(final Wallet wallet, File file, long delay, TimeUnit delayTimeUnit) {
         // An executor that starts up threads when needed and shuts them down later.
         this.executor = new ScheduledThreadPoolExecutor(1, new ContextPropagatingThreadFactory("Wallet autosave thread", Thread.MIN_PRIORITY));
@@ -106,7 +113,7 @@ public class WalletFiles {
     }
 
     private void saveNowInternal() throws IOException {
-        long now = System.currentTimeMillis();
+        final Stopwatch watch = Stopwatch.createStarted();
         File directory = file.getAbsoluteFile().getParentFile();
         File temp = File.createTempFile("wallet", null, directory);
         final Listener listener = vListener;
@@ -115,7 +122,8 @@ public class WalletFiles {
         wallet.saveToFile(temp, file);
         if (listener != null)
             listener.onAfterAutoSave(file);
-        log.info("Save completed in {}msec", System.currentTimeMillis() - now);
+        watch.stop();
+        log.info("Save completed in {}", watch);
     }
 
     /** Queues up a save in the background. Useful for not very important wallet changes. */

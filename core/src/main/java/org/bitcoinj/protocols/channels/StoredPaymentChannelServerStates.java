@@ -85,7 +85,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      *
      * @param broadcaster Used when the payment channels are closed
      */
-    public void setTransactionBroadcaster(TransactionBroadcaster broadcaster) {
+    public final void setTransactionBroadcaster(TransactionBroadcaster broadcaster) {
         this.broadcasterFuture.set(checkNotNull(broadcaster));
     }
 
@@ -111,9 +111,9 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 TransactionBroadcaster broadcaster = getBroadcaster();
                 channel.getOrCreateState(wallet, broadcaster).close();
             } catch (InsufficientMoneyException e) {
-                e.printStackTrace();
+                log.error("Exception when closing channel", e);
             } catch (VerificationException e) {
-                e.printStackTrace();
+                log.error("Exception when closing channel", e);
             }
             channel.state = null;
         }

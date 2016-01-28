@@ -24,6 +24,8 @@ import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.script.ScriptOpCodes;
 import org.bitcoinj.utils.ExchangeRate;
 import org.bitcoinj.wallet.WalletTransaction.Pool;
+
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
@@ -35,10 +37,9 @@ import java.io.*;
 import java.util.*;
 
 import static org.bitcoinj.core.Utils.*;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import org.bitcoinj.script.ScriptChunk;
+import java.math.BigInteger;
 
 /**
  * <p>A transaction represents the movement of coins from some addresses to some other addresses. It can also represent
@@ -84,22 +85,23 @@ public class Transaction extends ChildMessage {
 
     /** Threshold for lockTime: below this value it is interpreted as block number, otherwise as timestamp. **/
     public static final int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
+    /** Same but as a BigInteger for CHECKLOCKTIMEVERIFY */
+    public static final BigInteger LOCKTIME_THRESHOLD_BIG = BigInteger.valueOf(LOCKTIME_THRESHOLD);
 
     /** How many bytes a transaction can be before it won't be relayed anymore. Currently 100kb. */
     public static final int MAX_STANDARD_TX_SIZE = 100000;
 
     /**
-     * If fee is lower than this value (in satoshis), a default reference client will treat it as if there were no fee.
-     * Currently this is 1000 satoshis.
+     * If fee is lower than this value (in satoshis), Bitcoin Core will treat it as if there were no fee.
      */
-    public static final Coin REFERENCE_DEFAULT_MIN_TX_FEE = Coin.valueOf(1000);
+    public static final Coin REFERENCE_DEFAULT_MIN_TX_FEE = Coin.valueOf(5000); // satoshis
 
     /**
      * Any standard (ie pay-to-address) output smaller than this value (in satoshis) will most likely be rejected by the network.
      * This is calculated by assuming a standard output will be 34 bytes, and then using the formula used in
-     * {@link TransactionOutput#getMinNonDustValue(Coin)}. Currently it's 546 satoshis.
+     * {@link TransactionOutput#getMinNonDustValue(Coin)}.
      */
-    public static final Coin MIN_NONDUST_OUTPUT = Coin.valueOf(546);
+    public static final Coin MIN_NONDUST_OUTPUT = Coin.valueOf(2730); // satoshis
 
     // These are bitcoin serialized.
     private long version;
@@ -251,18 +253,19 @@ public class Transaction extends ChildMessage {
     }
 
     /**
-     * Calculates the sum of the outputs that are sending coins to a key in the wallet. The flag controls whether to
-     * include spent outputs or not.
+     * Gets the sum of the inputs, regardless of who owns them.
      */
-    Coin getValueSentToMe(TransactionBag transactionBag, boolean includeSpent) {
-        // This is tested in WalletTest.
-        Coin v = Coin.ZERO;
-        for (TransactionOutput o : outputs) {
-            if (!o.isMineOrWatched(transactionBag)) continue;
-            if (!includeSpent && !o.isAvailableForSpending()) continue;
-            v = v.add(o.getValue());
+    public Coin getInputSum() {
+        Coin inputTotal = Coin.ZERO;
+
+        for (TransactionInput input: inputs) {
+            Coin inputValue = input.getValue();
+            if (inputValue != null) {
+                inputTotal = inputTotal.add(inputValue);
+            }
         }
-        return v;
+
+        return inputTotal;
     }
 
     /*
@@ -292,7 +295,13 @@ public class Transaction extends ChildMessage {
      * Calculates the sum of the outputs that are sending coins to a key in the wallet.
      */
     public Coin getValueSentToMe(TransactionBag transactionBag) {
-        return getValueSentToMe(transactionBag, true);
+        // This is tested in WalletTest.
+        Coin v = Coin.ZERO;
+        for (TransactionOutput o : outputs) {
+            if (!o.isMineOrWatched(transactionBag)) continue;
+            v = v.add(o.getValue());
+        }
+        return v;
     }
 
     /**
@@ -379,6 +388,20 @@ public class Transaction extends ChildMessage {
         return v;
     }
 
+    /**
+     * Gets the sum of the outputs of the transaction. If the outputs are less than the inputs, it does not count the fee.
+     * @return the sum of the outputs regardless of who owns them.
+     */
+    public Coin getOutputSum() {
+        Coin totalOut = Coin.ZERO;
+
+        for (TransactionOutput output: outputs) {
+            totalOut = totalOut.add(output.getValue());
+        }
+
+        return totalOut;
+    }
+
     @Nullable private Coin cachedValue;
     @Nullable private TransactionBag cachedForBag;
 
@@ -460,8 +483,8 @@ public class Transaction extends ChildMessage {
      * These constants are a part of a scriptSig signature on the inputs. They define the details of how a
      * transaction can be redeemed, specifically, they control how the hash of the transaction is calculated.
      * <p/>
-     * In the official client, this enum also has another flag, SIGHASH_ANYONECANPAY. In this implementation,
-     * that's kept separate. Only SIGHASH_ALL is actually used in the official client today. The other flags
+     * In Bitcoin Core, this enum also has another flag, SIGHASH_ANYONECANPAY. In this implementation,
+     * that's kept separate. Only SIGHASH_ALL is actually used in Bitcoin Core today. The other flags
      * exist to allow for distributed contracts.
      */
     public enum SigHash {
@@ -606,7 +629,7 @@ public class Transaction extends ChildMessage {
     public String toString(@Nullable AbstractBlockChain chain) {
         // Basic info about the tx.
         StringBuilder s = new StringBuilder();
-        s.append(String.format("  %s: %s%n", getHashAsString(), getConfidence()));
+        s.append(String.format(Locale.US, "  %s: %s%n", getHashAsString(), getConfidence()));
         if (isTimeLocked()) {
             String time;
             if (lockTime < LOCKTIME_THRESHOLD) {
@@ -618,10 +641,13 @@ public class Transaction extends ChildMessage {
             } else {
                 time = new Date(lockTime*1000).toString();
             }
-            s.append(String.format("  time locked until %s%n", time));
+            s.append(String.format(Locale.US, "  time locked until %s%n", time));
+        }
+        if (isOptInFullRBF()) {
+            s.append("  opts into full replace-by-fee%n");
         }
         if (inputs.size() == 0) {
-            s.append(String.format("  INCOMPLETE: No inputs!%n"));
+            s.append(String.format(Locale.US, "  INCOMPLETE: No inputs!%n"));
             return s.toString();
         }
         if (isCoinBase()) {
@@ -659,10 +685,14 @@ public class Transaction extends ChildMessage {
                         s.append(Utils.HEX.encode(scriptPubKey.getPubKeyHash()));
                     }
                 }
+                String flags = Joiner.on(", ").skipNulls().join(in.hasSequence() ? "has sequence" : null,
+                        in.isOptInFullRBF() ? "opts into full RBF" : null);
+                if (!flags.isEmpty())
+                    s.append("\n          (").append(flags).append(')');
             } catch (Exception e) {
                 s.append("[exception: ").append(e.getMessage()).append("]");
             }
-            s.append(String.format("%n"));
+            s.append(String.format(Locale.US, "%n"));
         }
         for (TransactionOutput out : outputs) {
             s.append("     ");
@@ -682,11 +712,13 @@ public class Transaction extends ChildMessage {
             } catch (Exception e) {
                 s.append("[exception: ").append(e.getMessage()).append("]");
             }
-            s.append(String.format("%n"));
+            s.append(String.format(Locale.US, "%n"));
         }
         Coin fee = getFee();
         if (fee != null)
-            s.append("     fee  ").append(fee.toFriendlyString()).append(String.format("%n"));
+            s.append("     fee  ").append(fee.toFriendlyString()).append(String.format(Locale.US, "%n"));
+        if (purpose != null)
+            s.append("     prps ").append(purpose).append(String.format(Locale.US, "%n"));
         return s.toString();
     }
 
@@ -927,10 +959,10 @@ public class Transaction extends ChildMessage {
             for (int i = 0; i < inputs.size(); i++) {
                 inputScripts[i] = inputs.get(i).getScriptBytes();
                 inputSequenceNumbers[i] = inputs.get(i).getSequenceNumber();
-                inputs.get(i).setScriptBytes(TransactionInput.EMPTY_ARRAY);
+                inputs.get(i).clearScriptBytes();
             }
 
-            // This step has no purpose beyond being synchronized with the reference clients bugs. OP_CODESEPARATOR
+            // This step has no purpose beyond being synchronized with Bitcoin Core's bugs. OP_CODESEPARATOR
             // is a legacy holdover from a previous, broken design of executing scripts that shipped in Bitcoin 0.1.
             // It was seriously flawed and would have let anyone take anyone elses money. Later versions switched to
             // the design we use today where scripts are executed independently but share a stack. This left the
@@ -939,7 +971,7 @@ public class Transaction extends ChildMessage {
             // do it, we could split off the main chain.
             connectedScript = Script.removeAllInstancesOfOp(connectedScript, ScriptOpCodes.OP_CODESEPARATOR);
 
-            // Set the input to the script of its output. Satoshi does this but the step has no obvious purpose as
+            // Set the input to the script of its output. Bitcoin Core does this but the step has no obvious purpose as
             // the signature covers the hash of the prevout transaction which obviously includes the output script
             // already. Perhaps it felt safer to him in some way, or is another leftover from how the code was written.
             TransactionInput input = inputs.get(inputIndex);
@@ -957,7 +989,7 @@ public class Transaction extends ChildMessage {
                 // SIGHASH_SINGLE means only sign the output at the same index as the input (ie, my output).
                 if (inputIndex >= this.outputs.size()) {
                     // The input index is beyond the number of outputs, it's a buggy signature made by a broken
-                    // Bitcoin implementation. The reference client also contains a bug in handling this case:
+                    // Bitcoin implementation. Bitcoin Core also contains a bug in handling this case:
                     // any transaction output that is signed in this case will result in both the signed output
                     // and any future outputs to this public key being steal-able by anyone who has
                     // the resulting signature and the public key (both of which are part of the signed tx input).
@@ -969,7 +1001,7 @@ public class Transaction extends ChildMessage {
                         inputs.get(i).setSequenceNumber(inputSequenceNumbers[i]);
                     }
                     this.outputs = outputs;
-                    // Satoshis bug is that SignatureHash was supposed to return a hash and on this codepath it
+                    // Bitcoin Core's bug is that SignatureHash was supposed to return a hash and on this codepath it
                     // actually returns the constant "1" to indicate an error, which is never checked for. Oops.
                     return Sha256Hash.wrap("0100000000000000000000000000000000000000000000000000000000000000");
                 }
@@ -1170,13 +1202,13 @@ public class Transaction extends ChildMessage {
      */
     public void checkCoinBaseHeight(final int height)
             throws VerificationException {
-        assert height >= Block.BLOCK_HEIGHT_GENESIS;
-        assert isCoinBase();
+        checkArgument(height >= Block.BLOCK_HEIGHT_GENESIS);
+        checkState(isCoinBase());
 
         // Check block height is in coinbase input script
         final TransactionInput in = this.getInputs().get(0);
         final ScriptBuilder builder = new ScriptBuilder();
-        builder.data(ScriptBuilder.createHeightScriptData(height));
+        builder.number(height);
         final byte[] expected = builder.build().getProgram();
         final byte[] actual = in.getScriptBytes();
         if (actual.length < expected.length) {
@@ -1259,12 +1291,23 @@ public class Transaction extends ChildMessage {
     }
 
     /**
+     * Returns whether this transaction will opt into the
+     * <a href="https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki">full replace-by-fee </a> semantics.
+     */
+    public boolean isOptInFullRBF() {
+        for (TransactionInput input : getInputs())
+            if (input.isOptInFullRBF())
+                return true;
+        return false;
+    }
+
+    /**
      * <p>Returns true if this transaction is considered finalized and can be placed in a block. Non-finalized
      * transactions won't be included by miners and can be replaced with newer versions using sequence numbers.
      * This is useful in certain types of <a href="http://en.bitcoin.it/wiki/Contracts">contracts</a>, such as
      * micropayment channels.</p>
      *
-     * <p>Note that currently the replacement feature is disabled in the Satoshi client and will need to be
+     * <p>Note that currently the replacement feature is disabled in Bitcoin Core and will need to be
      * re-activated before this functionality is useful.</p>
      */
     public boolean isFinal(int height, long blockTimeSeconds) {

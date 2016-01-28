@@ -476,6 +476,7 @@ public class PeerGroup implements TransactionBroadcaster {
 
     private Runnable triggerConnectionsJob = new Runnable() {
         private boolean firstRun = true;
+        private final static long MIN_PEER_DISCOVERY_INTERVAL = 1000L;
 
         @Override
         public void run() {
@@ -525,7 +526,9 @@ public class PeerGroup implements TransactionBroadcaster {
             lock.lock();
             try {
                 if (doDiscovery) {
-                    if (discoverySuccess) {
+                    // Require that we have enough connections, to consider this
+                    // a success, or we just constantly test for new peers
+                    if (discoverySuccess && countConnectedAndPendingPeers() >= getMaxConnections()) {
                         groupBackoff.trackSuccess();
                     } else {
                         groupBackoff.trackFailure();
@@ -534,8 +537,10 @@ public class PeerGroup implements TransactionBroadcaster {
                 // Inactives is sorted by backoffMap time.
                 if (inactives.isEmpty()) {
                     if (countConnectedAndPendingPeers() < getMaxConnections()) {
-                        log.info("Peer discovery didn't provide us any more peers, will try again later.");
-                        executor.schedule(this, groupBackoff.getRetryTime() - now, TimeUnit.MILLISECONDS);
+                        long interval = Math.max(groupBackoff.getRetryTime() - now, MIN_PEER_DISCOVERY_INTERVAL);
+                        log.info("Peer discovery didn't provide us any more peers, will try again in "
+                            + interval + "ms.");
+                        executor.schedule(this, interval, TimeUnit.MILLISECONDS);
                     } else {
                         // We have enough peers and discovery provided no more, so just settle down. Most likely we
                         // were given a fixed set of addresses in some test scenario.
@@ -880,7 +885,7 @@ public class PeerGroup implements TransactionBroadcaster {
         checkState(!lock.isHeldByCurrentThread());
         int maxPeersToDiscoverCount = this.vMaxPeersToDiscoverCount;
         long peerDiscoveryTimeoutMillis = this.vPeerDiscoveryTimeoutMillis;
-        long start = System.currentTimeMillis();
+        final Stopwatch watch = Stopwatch.createStarted();
         final List<PeerAddress> addressList = Lists.newLinkedList();
         for (PeerDiscovery peerDiscovery : peerDiscoverers /* COW */) {
             InetSocketAddress[] addresses;
@@ -902,8 +907,8 @@ public class PeerGroup implements TransactionBroadcaster {
                 });
             }
         }
-        log.info("Peer discovery took {}ms and returned {} items", System.currentTimeMillis() - start,
-                addressList.size());
+        watch.stop();
+        log.info("Peer discovery took {} and returned {} items", watch, addressList.size());
         return addressList.size();
     }
 
@@ -933,19 +938,23 @@ public class PeerGroup implements TransactionBroadcaster {
         checkState(lock.isHeldByCurrentThread());
         if (localhostCheckState == LocalhostCheckState.NOT_TRIED) {
             // Do a fast blocking connect to see if anything is listening.
+            Socket socket = null;
             try {
-                Socket socket = new Socket();
+                socket = new Socket();
                 socket.connect(new InetSocketAddress(InetAddresses.forString("127.0.0.1"), params.getPort()), vConnectTimeoutMillis);
                 localhostCheckState = LocalhostCheckState.FOUND;
-                try {
-                    socket.close();
-                } catch (IOException e) {
-                    // Ignore.
-                }
                 return true;
             } catch (IOException e) {
                 log.info("Localhost peer not detected.");
                 localhostCheckState = LocalhostCheckState.NOT_THERE;
+            } finally {
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException e) {
+                        // Ignore.
+                    }
+                }
             }
         }
         return false;
@@ -1715,7 +1724,7 @@ public class PeerGroup implements TransactionBroadcaster {
                         for (long sample : samples) average += sample;
                         average /= samples.length;
 
-                        log.info(String.format("%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, avg/last %.2f/%.2f kilobytes per sec (stall threshold <%.2f KB/sec for %d seconds)",
+                        log.info(String.format(Locale.US, "%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, avg/last %.2f/%.2f kilobytes per sec (stall threshold <%.2f KB/sec for %d seconds)",
                                 blocksInLastSecond, txnsInLastSecond, origTxnsInLastSecond, average / 1024.0, bytesInLastSecond / 1024.0,
                                 minSpeedBytesPerSec / 1024.0, samples.length));
 
@@ -1732,7 +1741,7 @@ public class PeerGroup implements TransactionBroadcaster {
                                 log.warn("This network seems to be slower than the requested stall threshold - won't do stall disconnects any more.");
                             } else {
                                 Peer peer = getDownloadPeer();
-                                log.warn(String.format("Chain download stalled: received %.2f KB/sec for %d seconds, require average of %.2f KB/sec, disconnecting %s", average / 1024.0, samples.length, minSpeedBytesPerSec / 1024.0, peer));
+                                log.warn(String.format(Locale.US, "Chain download stalled: received %.2f KB/sec for %d seconds, require average of %.2f KB/sec, disconnecting %s", average / 1024.0, samples.length, minSpeedBytesPerSec / 1024.0, peer));
                                 peer.close();
                                 // Reset the sample buffer and give the next peer time to get going.
                                 samples = null;
@@ -1742,7 +1751,7 @@ public class PeerGroup implements TransactionBroadcaster {
                     } else {
                         warmupSeconds--;
                         if (bytesInLastSecond > 0)
-                            log.info(String.format("%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, last %.2f kilobytes per sec",
+                            log.info(String.format(Locale.US, "%d blocks/sec, %d tx/sec, %d pre-filtered tx/sec, last %.2f kilobytes per sec",
                                     blocksInLastSecond, txnsInLastSecond, origTxnsInLastSecond, bytesInLastSecond / 1024.0));
                     }
                 }

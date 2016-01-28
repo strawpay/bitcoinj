@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 import java.util.Date;
+import java.util.Locale;
 import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -81,7 +82,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
      *
      * @param transactionBroadcaster which is used to complete and announce contract and refund transactions.
      */
-    public void setTransactionBroadcaster(TransactionBroadcaster transactionBroadcaster) {
+    public final void setTransactionBroadcaster(TransactionBroadcaster transactionBroadcaster) {
         this.announcePeerGroupFuture.set(checkNotNull(transactionBroadcaster));
     }
 
@@ -371,9 +372,9 @@ class StoredClientChannel {
 
     @Override
     public String toString() {
-        final String newline = String.format("%n");
+        final String newline = String.format(Locale.US, "%n");
         final String closeStr = close == null ? "still open" : close.toString().replaceAll(newline, newline + "   ");
-        return String.format("Stored client channel for server ID %s (%s)%n" +
+        return String.format(Locale.US, "Stored client channel for server ID %s (%s)%n" +
                 "    Key:         %s%n" +
                 "    Value left:  %s%n" +
                 "    Refund fees: %s%n" +

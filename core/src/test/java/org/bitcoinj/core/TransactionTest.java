@@ -1,14 +1,32 @@
+/*
+ * Copyright 2014 Google Inc.
+ * Copyright 2016 Andreas Schildbach
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.bitcoinj.core;
 
 import org.bitcoinj.core.TransactionConfidence.*;
+import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.params.*;
 import org.bitcoinj.script.*;
 import org.bitcoinj.testing.*;
 import org.easymock.*;
 import org.junit.*;
 
+import java.math.BigInteger;
 import java.util.*;
-import static org.bitcoinj.core.BlockTest.params;
 import static org.bitcoinj.core.Utils.HEX;
 
 import static org.easymock.EasyMock.*;
@@ -22,33 +40,14 @@ import static org.junit.Assert.*;
  */
 public class TransactionTest {
     private static final NetworkParameters PARAMS = UnitTestParams.get();
-    private Transaction tx;
-    private Transaction dummy;
+    private static final Address ADDRESS = new ECKey().toAddress(PARAMS);
 
-    public static final Address ADDRESS = new ECKey().toAddress(PARAMS);
+    private Transaction tx;
 
     @Before
     public void setUp() throws Exception {
         Context context = new Context(PARAMS);
-        dummy = FakeTxBuilder.createFakeTx(PARAMS, Coin.COIN, ADDRESS);
-        tx = newTransaction();
-    }
-
-    private Transaction newTransaction(boolean newToAddress) {
-        Address addr = newToAddress ? new ECKey().toAddress(PARAMS): ADDRESS;
-        return newTransaction(new TransactionOutput(PARAMS, null, Coin.COIN, addr));
-    }
-
-    private Transaction newTransaction() {
-        return newTransaction(new TransactionOutput(PARAMS, null, Coin.COIN, ADDRESS));
-    }
-
-    private Transaction newTransaction(TransactionOutput to) {
-        Transaction newTx = new Transaction(PARAMS);
-        newTx.addOutput(to);
-        newTx.addInput(dummy.getOutput(0));
-
-        return newTx;
+        tx = FakeTxBuilder.createFakeTx(PARAMS);
     }
 
     @Test(expected = VerificationException.EmptyInputsOrOutputs.class)
@@ -65,7 +64,7 @@ public class TransactionTest {
 
     @Test(expected = VerificationException.LargerThanMaxBlockSize.class)
     public void tooHuge() throws Exception {
-        tx.addInput(dummy.getOutput(0)).setScriptBytes(new byte[Block.MAX_BLOCK_SIZE]);
+        tx.getInput(0).setScriptBytes(new byte[Block.MAX_BLOCK_SIZE]);
         tx.verify();
     }
 
@@ -121,7 +120,7 @@ public class TransactionTest {
         EasyMock.expect(to.isMineOrWatched(mockTB)).andReturn(true);
         EasyMock.expect(to.getSpentBy()).andReturn(new TransactionInput(PARAMS, null, new byte[0]));
 
-        Transaction tx = newTransaction(to);
+        Transaction tx = FakeTxBuilder.createFakeTxWithoutChange(PARAMS, to);
 
         replay(to);
 
@@ -136,7 +135,7 @@ public class TransactionTest {
         EasyMock.expect(to.isAvailableForSpending()).andReturn(false);
         EasyMock.expect(to.getSpentBy()).andReturn(null);
 
-        Transaction tx = newTransaction(to);
+        Transaction tx = FakeTxBuilder.createFakeTxWithoutChange(PARAMS, to);
 
         replay(to);
 
@@ -153,7 +152,7 @@ public class TransactionTest {
         BlockChain mockBlockChain = createMock(BlockChain.class);
         EasyMock.expect(mockBlockChain.estimateBlockTime(TEST_LOCK_TIME)).andReturn(now);
 
-        Transaction tx = newTransaction();
+        Transaction tx = FakeTxBuilder.createFakeTx(PARAMS);
         tx.setLockTime(TEST_LOCK_TIME); // less than five hundred million
 
         replay(mockBlockChain);
@@ -172,7 +171,6 @@ public class TransactionTest {
         length += getCombinedLength(tx.getOutputs());
 
         // add basic output, check the length
-        tx.addInput(dummy.getOutput(0));
         length += getCombinedLength(tx.getInputs());
 
         // optimal encoding size should equal the length we just calculated
@@ -187,13 +185,7 @@ public class TransactionTest {
 
     @Test
     public void testIsMatureReturnsFalseIfTransactionIsCoinbaseAndConfidenceTypeIsNotEqualToBuilding() {
-        Transaction tx = new Transaction(PARAMS);
-        tx.addInput(dummy.getOutput(0));
-
-        // make this into a coinbase transaction
-        TransactionInput input = tx.getInput(0);
-        input.getOutpoint().setHash(Sha256Hash.ZERO_HASH);
-        input.getOutpoint().setIndex(-1);
+        Transaction tx = FakeTxBuilder.createFakeCoinbaseTx(PARAMS);
 
         tx.getConfidence().setConfidenceType(ConfidenceType.UNKNOWN);
         assertEquals(tx.isMature(), false);
@@ -206,8 +198,88 @@ public class TransactionTest {
     }
 
     @Test
+    public void testCLTVPaymentChannelTransactionSpending() {
+        BigInteger time = BigInteger.valueOf(20);
+
+        ECKey from = new ECKey(), to = new ECKey(), incorrect = new ECKey();
+        Script outputScript = ScriptBuilder.createCLTVPaymentChannelOutput(time, from, to);
+
+        Transaction tx = new Transaction(PARAMS);
+        tx.addInput(new TransactionInput(PARAMS, tx, new byte[] {}));
+        tx.getInput(0).setSequenceNumber(0);
+        tx.setLockTime(time.subtract(BigInteger.ONE).longValue());
+        TransactionSignature fromSig =
+                tx.calculateSignature(0, from, outputScript, Transaction.SigHash.SINGLE, false);
+        TransactionSignature toSig =
+                tx.calculateSignature(0, to, outputScript, Transaction.SigHash.SINGLE, false);
+        TransactionSignature incorrectSig =
+                tx.calculateSignature(0, incorrect, outputScript, Transaction.SigHash.SINGLE, false);
+        Script scriptSig =
+                ScriptBuilder.createCLTVPaymentChannelInput(fromSig, toSig);
+        Script refundSig =
+                ScriptBuilder.createCLTVPaymentChannelRefund(fromSig);
+        Script invalidScriptSig1 =
+                ScriptBuilder.createCLTVPaymentChannelInput(fromSig, incorrectSig);
+        Script invalidScriptSig2 =
+                ScriptBuilder.createCLTVPaymentChannelInput(incorrectSig, toSig);
+
+        try {
+            scriptSig.correctlySpends(tx, 0, outputScript, Script.ALL_VERIFY_FLAGS);
+        } catch (ScriptException e) {
+            e.printStackTrace();
+            fail("Settle transaction failed to correctly spend the payment channel");
+        }
+
+        try {
+            refundSig.correctlySpends(tx, 0, outputScript, Script.ALL_VERIFY_FLAGS);
+            fail("Refund passed before expiry");
+        } catch (ScriptException e) { }
+        try {
+            invalidScriptSig1.correctlySpends(tx, 0, outputScript, Script.ALL_VERIFY_FLAGS);
+            fail("Invalid sig 1 passed");
+        } catch (ScriptException e) { }
+        try {
+            invalidScriptSig2.correctlySpends(tx, 0, outputScript, Script.ALL_VERIFY_FLAGS);
+            fail("Invalid sig 2 passed");
+        } catch (ScriptException e) { }
+    }
+
+    @Test
+    public void testCLTVPaymentChannelTransactionRefund() {
+        BigInteger time = BigInteger.valueOf(20);
+
+        ECKey from = new ECKey(), to = new ECKey(), incorrect = new ECKey();
+        Script outputScript = ScriptBuilder.createCLTVPaymentChannelOutput(time, from, to);
+
+        Transaction tx = new Transaction(PARAMS);
+        tx.addInput(new TransactionInput(PARAMS, tx, new byte[] {}));
+        tx.getInput(0).setSequenceNumber(0);
+        tx.setLockTime(time.add(BigInteger.ONE).longValue());
+        TransactionSignature fromSig =
+                tx.calculateSignature(0, from, outputScript, Transaction.SigHash.SINGLE, false);
+        TransactionSignature incorrectSig =
+                tx.calculateSignature(0, incorrect, outputScript, Transaction.SigHash.SINGLE, false);
+        Script scriptSig =
+                ScriptBuilder.createCLTVPaymentChannelRefund(fromSig);
+        Script invalidScriptSig =
+                ScriptBuilder.createCLTVPaymentChannelRefund(incorrectSig);
+
+        try {
+            scriptSig.correctlySpends(tx, 0, outputScript, Script.ALL_VERIFY_FLAGS);
+        } catch (ScriptException e) {
+            e.printStackTrace();
+            fail("Refund failed to correctly spend the payment channel");
+        }
+
+        try {
+            invalidScriptSig.correctlySpends(tx, 0, outputScript, Script.ALL_VERIFY_FLAGS);
+            fail("Invalid sig passed");
+        } catch (ScriptException e) { }
+    }
+
+    @Test
     public void testToStringWhenLockTimeIsSpecifiedInBlockHeight() {
-        Transaction tx = newTransaction();
+        Transaction tx = FakeTxBuilder.createFakeTx(PARAMS);
         TransactionInput input = tx.getInput(0);
         input.setSequenceNumber(42);
 
@@ -231,7 +303,7 @@ public class TransactionTest {
 
     @Test
     public void testToStringWhenIteratingOverAnInputCatchesAnException() {
-        Transaction tx = newTransaction();
+        Transaction tx = FakeTxBuilder.createFakeTx(PARAMS);
         TransactionInput ti = new TransactionInput(PARAMS, tx, new byte[0]) {
             @Override
             public Script getScriptSig() throws ScriptException {
@@ -251,14 +323,13 @@ public class TransactionTest {
 
     @Test
     public void testTheTXByHeightComparator() {
-        final boolean USE_UNIQUE_ADDRESS = true;
-        Transaction tx1 = newTransaction(USE_UNIQUE_ADDRESS);
+        Transaction tx1 = FakeTxBuilder.createFakeTx(PARAMS);
         tx1.getConfidence().setAppearedAtChainHeight(1);
 
-        Transaction tx2 = newTransaction(USE_UNIQUE_ADDRESS);
+        Transaction tx2 = FakeTxBuilder.createFakeTx(PARAMS);
         tx2.getConfidence().setAppearedAtChainHeight(2);
 
-        Transaction tx3 = newTransaction(USE_UNIQUE_ADDRESS);
+        Transaction tx3 = FakeTxBuilder.createFakeTx(PARAMS);
         tx3.getConfidence().setAppearedAtChainHeight(3);
 
         SortedSet<Transaction> set = new TreeSet<Transaction>(Transaction.SORT_TX_BY_HEIGHT);
@@ -277,7 +348,6 @@ public class TransactionTest {
         assertEquals(iterator.next().equals(tx1), true);
         assertEquals(iterator.hasNext(), false);
     }
-
 
     @Test(expected = ScriptException.class)
     public void testAddSignedInputThrowsExceptionWhenScriptIsNotToRawPubKeyAndIsNotToAddress() {
@@ -312,7 +382,7 @@ public class TransactionTest {
         // Coinbase transaction from block 300,000
         final byte[] transactionBytes = HEX.decode("01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff4803e09304062f503253482f0403c86d53087ceca141295a00002e522cfabe6d6d7561cf262313da1144026c8f7a43e3899c44f6145f39a36507d36679a8b7006104000000000000000000000001c8704095000000001976a91480ad90d403581fa3bf46086a91b2d9d4125db6c188ac00000000");
         final int height = 300000;
-        final Transaction transaction = params.getDefaultSerializer().makeTransaction(transactionBytes);
+        final Transaction transaction = PARAMS.getDefaultSerializer().makeTransaction(transactionBytes);
         transaction.checkCoinBaseHeight(height);
     }
 
@@ -330,7 +400,17 @@ public class TransactionTest {
             + "1eeeed88ffffffff01e0587597000000001976a91421c0d001728b3feaf11551"
             + "5b7c135e779e9f442f88ac00000000");
         final int height = 224430;
-        final Transaction transaction = params.getDefaultSerializer().makeTransaction(transactionBytes);
+        final Transaction transaction = PARAMS.getDefaultSerializer().makeTransaction(transactionBytes);
         transaction.checkCoinBaseHeight(height);
+    }
+
+    @Test
+    public void optInFullRBF() {
+        // a standard transaction as wallets would create
+        Transaction tx = FakeTxBuilder.createFakeTx(PARAMS);
+        assertFalse(tx.isOptInFullRBF());
+
+        tx.getInputs().get(0).setSequenceNumber(TransactionInput.NO_SEQUENCE - 2);
+        assertTrue(tx.isOptInFullRBF());
     }
 }
