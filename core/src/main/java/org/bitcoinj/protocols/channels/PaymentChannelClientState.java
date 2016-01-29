@@ -22,7 +22,7 @@ import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.utils.Threading;
-import org.bitcoinj.wallet.AllowUnconfirmedCoinSelector;
+import org.bitcoinj.wallet.CoinSelector;
 import org.spongycastle.crypto.params.KeyParameter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Throwables;
@@ -74,6 +74,10 @@ public class PaymentChannelClientState {
     private final Wallet wallet;
     // Both sides need a key (private in our case, public for the server) in order to manage the multisig contract
     // and transactions that spend it.
+
+    @Nullable
+    private final CoinSelector  coinSelector;
+
     private final ECKey myKey, serverMultisigKey;
     // How much value (in satoshis) is locked up into the channel.
     private final Coin totalValue;
@@ -125,6 +129,7 @@ public class PaymentChannelClientState {
         this.valueToMe = checkNotNull(storedClientChannel.valueToMe);
         this.storedChannel = storedClientChannel;
         this.state = State.READY;
+        this.coinSelector = null;
         initWalletListeners();
     }
 
@@ -156,7 +161,7 @@ public class PaymentChannelClientState {
      *
      * @throws VerificationException If either myKey's pubkey or serverMultisigKey's pubkey are non-canonical (ie invalid)
      */
-    public PaymentChannelClientState(Wallet wallet, ECKey myKey, ECKey serverMultisigKey,
+    public PaymentChannelClientState(Wallet wallet, CoinSelector coinSelector, ECKey myKey, ECKey serverMultisigKey,
                                      Coin value, long expiryTimeInSeconds) throws VerificationException {
         checkArgument(value.signum() > 0);
         this.wallet = checkNotNull(wallet);
@@ -166,6 +171,7 @@ public class PaymentChannelClientState {
         this.valueToMe = this.totalValue = checkNotNull(value);
         this.expiryTime = expiryTimeInSeconds;
         this.state = State.NEW;
+        this.coinSelector = coinSelector;
     }
 
     private synchronized void initWalletListeners() {
@@ -266,7 +272,8 @@ public class PaymentChannelClientState {
         if (multisigOutput.getMinNonDustValue().compareTo(totalValue) > 0)
             throw new ValueOutOfRangeException("totalValue too small to use");
         Wallet.SendRequest req = Wallet.SendRequest.forTx(template);
-        req.coinSelector = AllowUnconfirmedCoinSelector.get();
+        checkNotNull(coinSelector);
+        req.coinSelector = coinSelector;
         editContractSendRequest(req);
         req.shuffleOutputs = false;   // TODO: Fix things so shuffling is usable.
         req.aesKey = userKey;

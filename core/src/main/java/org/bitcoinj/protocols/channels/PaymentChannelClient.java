@@ -20,6 +20,9 @@ package org.bitcoinj.protocols.channels;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
 import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.AllowUnconfirmedCoinSelector;
+import org.bitcoinj.wallet.CoinSelector;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -96,6 +99,8 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     // key to decrypt myKey, if it is encrypted, during setup.
     private KeyParameter userKeySetup;
 
+    private CoinSelector  coinSelector;
+
     private final long timeWindow;
 
     @GuardedBy("lock") private long minPayment;
@@ -130,7 +135,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *             the server)
      */
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, ClientConnection conn) {
-      this(wallet,myKey,maxValue,serverId, DEFAULT_TIME_WINDOW, null, conn);
+        this(wallet,myKey,maxValue,serverId, DEFAULT_TIME_WINDOW, null, null, conn);
     }
 
     /**
@@ -150,11 +155,12 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *                   a proposal to the server. The server may in turn propose something different.
      *                   See {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#acceptExpireTime(long)}
      * @param userKeySetup Key derived from a user password, used to decrypt myKey, if it is encrypted, during setup.
+     * @param coinSelector Use this to specify the coins to use for setting up channels.
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      */
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
-                                @Nullable KeyParameter userKeySetup, ClientConnection conn) {
+                                @Nullable KeyParameter userKeySetup, @Nullable CoinSelector coinSelector, ClientConnection conn) {
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(myKey);
         this.maxValue = checkNotNull(maxValue);
@@ -163,6 +169,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         this.timeWindow = timeWindow;
         this.conn = checkNotNull(conn);
         this.userKeySetup = userKeySetup;
+        this.coinSelector = coinSelector != null ? coinSelector : AllowUnconfirmedCoinSelector.get();
     }
 
     /** 
@@ -205,17 +212,20 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         // start to float.
         final long MIN_PAYMENT = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.value;
         if (initiate.getMinPayment() != MIN_PAYMENT) {
-            log.error("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
-            errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
-            errorBuilder.setExpectedValue(MIN_PAYMENT);
-            missing = Coin.valueOf(initiate.getMinPayment() - MIN_PAYMENT);
-            return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
+            log.debug("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
+            if (initiate.getMinPayment() > MIN_PAYMENT) {
+                log.error("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
+                errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
+                errorBuilder.setExpectedValue(MIN_PAYMENT);
+                missing = Coin.valueOf(initiate.getMinPayment() - MIN_PAYMENT);
+                return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
+            }
         }
 
         final byte[] pubKeyBytes = initiate.getMultisigKey().toByteArray();
         if (!ECKey.isPubKeyCanonical(pubKeyBytes))
             throw new VerificationException("Server gave us a non-canonical public key, protocol error.");
-        state = new PaymentChannelClientState(wallet, myKey, ECKey.fromPublicOnly(pubKeyBytes), contractValue, expireTime);
+        state = new PaymentChannelClientState(wallet, coinSelector, myKey, ECKey.fromPublicOnly(pubKeyBytes), contractValue, expireTime);
         try {
             state.initiate(userKeySetup);
         } catch (ValueOutOfRangeException e) {

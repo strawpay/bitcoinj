@@ -29,6 +29,7 @@ import com.google.common.util.concurrent.SettableFuture;
 
 import com.google.protobuf.ByteString;
 import org.bitcoin.paymentchannel.Protos;
+import org.bitcoinj.wallet.CoinSelector;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
@@ -69,7 +70,7 @@ public class PaymentChannelClientConnection {
     public PaymentChannelClientConnection(InetSocketAddress server, int timeoutSeconds, Wallet wallet, ECKey myKey,
                                           Coin maxValue, String serverId) throws IOException, ValueOutOfRangeException {
         this(server, timeoutSeconds, wallet, myKey, maxValue, serverId,
-                PaymentChannelClient.DEFAULT_TIME_WINDOW, null);
+                PaymentChannelClient.DEFAULT_TIME_WINDOW, null, null);
     }
 
     /**
@@ -97,12 +98,12 @@ public class PaymentChannelClientConnection {
      */
     public PaymentChannelClientConnection(InetSocketAddress server, int timeoutSeconds, Wallet wallet, ECKey myKey,
                                           Coin maxValue, String serverId, final long timeWindow,
-                                          @Nullable KeyParameter userKeySetup)
+                                          @Nullable KeyParameter userKeySetup, @Nullable CoinSelector coinSelector)
             throws IOException, ValueOutOfRangeException {
         // Glue the object which vends/ingests protobuf messages in order to manage state to the network object which
         // reads/writes them to the wire in length prefixed form.
         channelClient = new PaymentChannelClient(wallet, myKey, maxValue, Sha256Hash.of(serverId.getBytes()), timeWindow,
-                userKeySetup, new PaymentChannelClient.ClientConnection() {
+                userKeySetup, coinSelector, new PaymentChannelClient.ClientConnection() {
             @Override
             public void sendToServer(Protos.TwoWayChannelMessage msg) {
                 wireParser.write(msg);

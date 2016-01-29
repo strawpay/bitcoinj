@@ -20,6 +20,8 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.store.WalletProtobufSerializer;
 import org.bitcoinj.testing.TestWithWallet;
 import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.AllowUnconfirmedCoinSelector;
+import org.bitcoinj.wallet.CoinSelector;
 import org.bitcoinj.wallet.WalletFiles;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -161,8 +163,10 @@ public class ChannelConnectionTest extends TestWithWallet {
                 });
         server.bindAndStart(4243);
 
+        CoinSelector coinSelector = AllowUnconfirmedCoinSelector.get();
         PaymentChannelClientConnection client = new PaymentChannelClientConnection(
-                new InetSocketAddress("localhost", 4243), 30, wallet, myKey, COIN, "", PaymentChannelClient.DEFAULT_TIME_WINDOW, userKeySetup);
+                new InetSocketAddress("localhost", 4243), 30, wallet, myKey, COIN, "",
+                PaymentChannelClient.DEFAULT_TIME_WINDOW, userKeySetup, coinSelector);
 
         // Wait for the multi-sig tx to be transmitted.
         broadcastTxPause.release();

@@ -2,6 +2,7 @@ package org.bitcoinj.protocols.channels;
 
 import org.bitcoinj.core.*;
 import org.bitcoin.paymentchannel.Protos;
+import org.bitcoinj.wallet.CoinSelector;
 import org.easymock.Capture;
 import org.easymock.EasyMock;
 import org.junit.Before;
@@ -51,8 +52,9 @@ public class PaymentChannelClientTest {
     public void shouldSendTimeWindowInClientVersion() throws Exception {
         long timeWindow = 4000;
         KeyParameter userKey = null;
+        CoinSelector coinSelector = null;
         PaymentChannelClient dut =
-                new PaymentChannelClient(wallet, ecKey, maxValue, serverHash, timeWindow, userKey, connection);
+                new PaymentChannelClient(wallet, ecKey, maxValue, serverHash, timeWindow, userKey, coinSelector, connection);
         connection.sendToServer(capture(clientVersionCapture));
         EasyMock.expect(wallet.getExtensions()).andReturn(new HashMap<String, WalletExtension>());
         replay(connection, wallet);

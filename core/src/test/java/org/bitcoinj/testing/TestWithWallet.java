@@ -21,6 +21,8 @@ import org.bitcoinj.params.UnitTestParams;
 import org.bitcoinj.store.BlockStore;
 import org.bitcoinj.store.MemoryBlockStore;
 import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.wallet.AllowUnconfirmedCoinSelector;
+import org.bitcoinj.wallet.CoinSelector;
 
 import javax.annotation.Nullable;
 
@@ -42,6 +44,7 @@ public class TestWithWallet {
     protected ECKey myKey;
     protected Address myAddress;
     protected Wallet wallet;
+    protected CoinSelector coinSelector;
     protected BlockChain chain;
     protected BlockStore blockStore;
 
@@ -50,6 +53,7 @@ public class TestWithWallet {
         Wallet.SendRequest.DEFAULT_FEE_PER_KB = Coin.ZERO;
         Context ctx = new Context(params);
         wallet = new Wallet(params);
+        coinSelector = AllowUnconfirmedCoinSelector.get();
         myKey = wallet.currentReceiveKey();
         myAddress = myKey.toAddress(params);
         blockStore = new MemoryBlockStore(params);
