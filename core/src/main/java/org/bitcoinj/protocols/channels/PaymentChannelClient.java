@@ -432,6 +432,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         lock.lock();
         try {
             connectionOpen = false;
+            setIncreasePaymentFutureIfNeeded(CloseReason.CONNECTION_CLOSED, "Connection closed");
             if (state != null)
                 state.disconnectFromChannel();
         } finally {
