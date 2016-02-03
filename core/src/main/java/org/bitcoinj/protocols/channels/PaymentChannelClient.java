@@ -214,9 +214,9 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         }
 
         if (initiate.getMinPayment() != maxChannelFee.value) {
-            log.debug("Server requested a min payment of {} but we expected up too {}", initiate.getMinPayment(), maxChannelFee);
+            log.debug("Server requested a min payment of {} but we expected up to {}", initiate.getMinPayment(), maxChannelFee);
             if (initiate.getMinPayment() > maxChannelFee.value) {
-                log.error("Server requested a min payment of {} but we expected up too {}", initiate.getMinPayment(), maxChannelFee);
+                log.error("Server requested a min payment of {} but we expected up to {}", initiate.getMinPayment(), maxChannelFee);
                 errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
                 errorBuilder.setExpectedValue(maxChannelFee.value);
                 missing = Coin.valueOf(initiate.getMinPayment() - maxChannelFee.value);
