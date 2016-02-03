@@ -93,6 +93,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     // Information used during channel initialization to send to the server or check what the server sends to us
     private final ECKey myKey;
     private final Coin maxValue;
+    private final Coin maxChannelFee;
 
     private Coin missing;
 
@@ -134,8 +135,10 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      */
+
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, ClientConnection conn) {
-        this(wallet,myKey,maxValue,serverId, DEFAULT_TIME_WINDOW, null, null, conn);
+        this(wallet,myKey,Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,maxValue,serverId, DEFAULT_TIME_WINDOW,
+                null, null, conn);
     }
 
     /**
@@ -144,6 +147,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * @param wallet The wallet which will be paid from, and where completed transactions will be committed.
      *               Must already have a {@link StoredPaymentChannelClientStates} object in its extensions set.
      * @param myKey A freshly generated keypair used for the multisig contract and refund output.
+     * @param maxChannelFee A fee to the server will be accepted up to this amount..
      * @param maxValue The maximum value the server is allowed to request that we lock into this channel until the
      *                 refund transaction unlocks. Note that if there is a previously open channel, the refund
      *                 transaction used in this channel may be larger than maxValue. Thus, maxValue is not a method for
@@ -159,10 +163,11 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      */
-    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
+    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxChannelFee, Coin maxValue, Sha256Hash serverId, long timeWindow,
                                 @Nullable KeyParameter userKeySetup, @Nullable CoinSelector coinSelector, ClientConnection conn) {
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(myKey);
+        this.maxChannelFee = checkNotNull(maxChannelFee);
         this.maxValue = checkNotNull(maxValue);
         this.serverId = checkNotNull(serverId);
         checkState(timeWindow >= 0);
@@ -208,16 +213,13 @@ public class PaymentChannelClient implements IPaymentChannelClient {
             return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
         }
 
-        // For now we require a hard-coded value. In future this will have to get more complex and dynamic as the fees
-        // start to float.
-        final long MIN_PAYMENT = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.value;
-        if (initiate.getMinPayment() != MIN_PAYMENT) {
-            log.debug("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
-            if (initiate.getMinPayment() > MIN_PAYMENT) {
-                log.error("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
+        if (initiate.getMinPayment() != maxChannelFee.value) {
+            log.debug("Server requested a min payment of {} but we expected up too {}", initiate.getMinPayment(), maxChannelFee);
+            if (initiate.getMinPayment() > maxChannelFee.value) {
+                log.error("Server requested a min payment of {} but we expected up too {}", initiate.getMinPayment(), maxChannelFee);
                 errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
-                errorBuilder.setExpectedValue(MIN_PAYMENT);
-                missing = Coin.valueOf(initiate.getMinPayment() - MIN_PAYMENT);
+                errorBuilder.setExpectedValue(maxChannelFee.value);
+                missing = Coin.valueOf(initiate.getMinPayment() - maxChannelFee.value);
                 return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
             }
         }

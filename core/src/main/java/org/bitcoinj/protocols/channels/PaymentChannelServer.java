@@ -123,6 +123,10 @@ public class PaymentChannelServer {
     // The key used for multisig in this channel
     @GuardedBy("lock") private ECKey myKey;
 
+    // The fee server charges for managing (and settling the channel).
+    // This is will be requested in the setup via the min_payment field in the initiate message.
+    private final Coin channelFee;
+
     // The minimum accepted channel value
     private final Coin minAcceptedChannelSize;
 
@@ -166,7 +170,8 @@ public class PaymentChannelServer {
      */
     public PaymentChannelServer(TransactionBroadcaster broadcaster, Wallet wallet,
                                 Coin minAcceptedChannelSize, ServerConnection conn) {
-        this(broadcaster, wallet, minAcceptedChannelSize, DEFAULT_MIN_TIME_WINDOW, DEFAULT_MAX_TIME_WINDOW, conn);
+        this(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
+                minAcceptedChannelSize, DEFAULT_MIN_TIME_WINDOW, DEFAULT_MAX_TIME_WINDOW, conn);
     }
 
     /**
@@ -175,6 +180,7 @@ public class PaymentChannelServer {
      * @param broadcaster The PeerGroup on which transactions will be broadcast - should have multiple connections.
      * @param wallet The wallet which will be used to complete transactions.
      *               Unlike {@link PaymentChannelClient}, this does not have to already contain a StoredState manager
+     * @param channelFee The fee amount per channel that the client has to pay in the initiate phase.
      * @param minAcceptedChannelSize The minimum value the client must lock into this channel. A value too large will be
      *                               rejected by clients, and a value too low will require excessive channel reopening
      *                               and may cause fees to be require to settle the channel. A reasonable value depends
@@ -187,11 +193,13 @@ public class PaymentChannelServer {
      *              the client and will close the connection on request)
      */
     public PaymentChannelServer(TransactionBroadcaster broadcaster, Wallet wallet,
-                                Coin minAcceptedChannelSize, long minTimeWindow, long maxTimeWindow, ServerConnection conn) {
+                                Coin channelFee, Coin minAcceptedChannelSize, long minTimeWindow,
+                                long maxTimeWindow, ServerConnection conn) {
         if (minTimeWindow > maxTimeWindow) throw new IllegalArgumentException("minTimeWindow must be less or equal to maxTimeWindow");
         if (minTimeWindow < HARD_MIN_TIME_WINDOW) throw new IllegalArgumentException("minTimeWindow must be larger than" + HARD_MIN_TIME_WINDOW  + " seconds");
         this.broadcaster = checkNotNull(broadcaster);
         this.wallet = checkNotNull(wallet);
+        this.channelFee = checkNotNull(channelFee);
         this.minAcceptedChannelSize = checkNotNull(minAcceptedChannelSize);
         this.conn = checkNotNull(conn);
         this.minTimeWindow = minTimeWindow;
@@ -268,7 +276,7 @@ public class PaymentChannelServer {
                 .setMultisigKey(ByteString.copyFrom(myKey.getPubKey()))
                 .setExpireTimeSecs(expireTime)
                 .setMinAcceptedChannelSize(minAcceptedChannelSize.value)
-                .setMinPayment(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.value);
+                .setMinPayment(channelFee.value);
 
         conn.sendToClient(Protos.TwoWayChannelMessage.newBuilder()
                 .setInitiate(initiateBuilder)

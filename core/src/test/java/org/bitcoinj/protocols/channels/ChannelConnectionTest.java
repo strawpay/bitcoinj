@@ -165,7 +165,8 @@ public class ChannelConnectionTest extends TestWithWallet {
 
         CoinSelector coinSelector = AllowUnconfirmedCoinSelector.get();
         PaymentChannelClientConnection client = new PaymentChannelClientConnection(
-                new InetSocketAddress("localhost", 4243), 30, wallet, myKey, COIN, "",
+                new InetSocketAddress("localhost", 4243), 30, wallet, myKey,
+                Transaction.REFERENCE_DEFAULT_MIN_TX_FEE, COIN, "",
                 PaymentChannelClient.DEFAULT_TIME_WINDOW, userKeySetup, coinSelector);
 
         // Wait for the multi-sig tx to be transmitted.

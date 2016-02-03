@@ -16,12 +16,7 @@
 
 package org.bitcoinj.protocols.channels;
 
-import org.bitcoinj.core.Coin;
-import org.bitcoinj.core.ECKey;
-import org.bitcoinj.core.InsufficientMoneyException;
-import org.bitcoinj.core.Sha256Hash;
-import org.bitcoinj.core.Utils;
-import org.bitcoinj.core.Wallet;
+import org.bitcoinj.core.*;
 import org.bitcoinj.net.NioClient;
 import org.bitcoinj.net.ProtobufConnection;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -69,7 +64,7 @@ public class PaymentChannelClientConnection {
      */
     public PaymentChannelClientConnection(InetSocketAddress server, int timeoutSeconds, Wallet wallet, ECKey myKey,
                                           Coin maxValue, String serverId) throws IOException, ValueOutOfRangeException {
-        this(server, timeoutSeconds, wallet, myKey, maxValue, serverId,
+        this(server, timeoutSeconds, wallet, myKey, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE, maxValue, serverId,
                 PaymentChannelClient.DEFAULT_TIME_WINDOW, null, null);
     }
 
@@ -97,12 +92,12 @@ public class PaymentChannelClientConnection {
      * @throws ValueOutOfRangeException if the balance of wallet is lower than maxValue.
      */
     public PaymentChannelClientConnection(InetSocketAddress server, int timeoutSeconds, Wallet wallet, ECKey myKey,
-                                          Coin maxValue, String serverId, final long timeWindow,
+                                          Coin acceptableMinPayment, Coin maxValue, String serverId, final long timeWindow,
                                           @Nullable KeyParameter userKeySetup, @Nullable CoinSelector coinSelector)
             throws IOException, ValueOutOfRangeException {
         // Glue the object which vends/ingests protobuf messages in order to manage state to the network object which
         // reads/writes them to the wire in length prefixed form.
-        channelClient = new PaymentChannelClient(wallet, myKey, maxValue, Sha256Hash.of(serverId.getBytes()), timeWindow,
+        channelClient = new PaymentChannelClient(wallet, myKey, acceptableMinPayment, maxValue, Sha256Hash.of(serverId.getBytes()), timeWindow,
                 userKeySetup, coinSelector, new PaymentChannelClient.ClientConnection() {
             @Override
             public void sendToServer(Protos.TwoWayChannelMessage msg) {
