@@ -5096,13 +5096,19 @@ public class Wallet extends BaseTaggableObject
         // Don't hold the wallet lock whilst doing this, so if the broadcaster accesses the wallet at some point there
         // is no inversion.
         for (Transaction tx : toBroadcast) {
-            checkState(tx.getConfidence().getConfidenceType() == ConfidenceType.PENDING);
-            // Re-broadcast even if it's marked as already seen for two reasons
-            // 1) Old wallets may have transactions marked as broadcast by 1 peer when in reality the network
-            //    never saw it, due to bugs.
-            // 2) It can't really hurt.
-            log.info("New broadcaster so uploading waiting tx {}", tx.getHash());
-            broadcaster.broadcastTransaction(tx);
+            // TODO: Cleanup this fix (replaced checkState with warning) to allow wallet to start.
+            // checkState(tx.getConfidence().getConfidenceType() == ConfidenceType.PENDING);
+            boolean check = tx.getConfidence().getConfidenceType() == ConfidenceType.PENDING;
+            if (check) {
+                // Re-broadcast even if it's marked as already seen for two reasons
+                // 1) Old wallets may have transactions marked as broadcast by 1 peer when in reality the network
+                //    never saw it, due to bugs.
+                // 2) It can't really hurt.
+                log.info("New broadcaster so uploading waiting tx {}", tx.getHash());
+                broadcaster.broadcastTransaction(tx);
+            } else {
+                log.warn("tx in pending is not pending, tx={}", tx.getHash());
+            }
         }
     }
 
