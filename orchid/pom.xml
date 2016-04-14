@@ -6,17 +6,11 @@
     <parent>
         <groupId>org.bitcoinj</groupId>
         <artifactId>bitcoinj-parent</artifactId>
-        <version>0.14-SNAPSHOT</version>
+        <version>0.15-SNAPSHOT</version>
     </parent>
 
     <artifactId>orchid</artifactId>
     <version>1.2</version>
-
-    <parent>
-        <groupId>com.google</groupId>
-        <artifactId>bitcoinj-parent</artifactId>
-        <version>0.14-SNAPSHOT</version>
-    </parent>
 
     <name>Orchid</name>
     <description>Tor library</description>

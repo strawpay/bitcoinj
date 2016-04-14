@@ -30,6 +30,8 @@ import static com.google.common.base.Preconditions.checkState;
  * <p>A Message is a data structure that can be serialized/deserialized using the Bitcoin serialization format.
  * Specific types of messages that are used both in the block chain, and on the wire, are derived from this
  * class.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public abstract class Message {
     private static final Logger log = LoggerFactory.getLogger(Message.class);
@@ -117,12 +119,12 @@ public abstract class Message {
         }
     }
 
-    Message(NetworkParameters params, byte[] payload, int offset) throws ProtocolException {
+    protected Message(NetworkParameters params, byte[] payload, int offset) throws ProtocolException {
         this(params, payload, offset, params.getProtocolVersionNum(NetworkParameters.ProtocolVersion.CURRENT),
              params.getDefaultSerializer(), UNKNOWN_LENGTH);
     }
 
-    Message(NetworkParameters params, byte[] payload, int offset, MessageSerializer serializer, int length) throws ProtocolException {
+    protected Message(NetworkParameters params, byte[] payload, int offset, MessageSerializer serializer, int length) throws ProtocolException {
         this(params, payload, offset, params.getProtocolVersionNum(NetworkParameters.ProtocolVersion.CURRENT),
              serializer, length);
     }
@@ -264,7 +266,7 @@ public abstract class Message {
     /**
      * Serializes this message to the provided stream. If you just want the raw bytes use bitcoinSerialize().
      */
-    void bitcoinSerializeToStream(OutputStream stream) throws IOException {
+    protected void bitcoinSerializeToStream(OutputStream stream) throws IOException {
         log.error("Error: {} class has not implemented bitcoinSerializeToStream method.  Generating message with no payload", getClass());
     }
 
@@ -285,7 +287,7 @@ public abstract class Message {
         return length;
     }
 
-    long readUint32() throws ProtocolException {
+    protected long readUint32() throws ProtocolException {
         try {
             long u = Utils.readUint32(payload, cursor);
             cursor += 4;
@@ -295,7 +297,7 @@ public abstract class Message {
         }
     }
 
-    long readInt64() throws ProtocolException {
+    protected long readInt64() throws ProtocolException {
         try {
             long u = Utils.readInt64(payload, cursor);
             cursor += 8;
@@ -305,16 +307,16 @@ public abstract class Message {
         }
     }
 
-    BigInteger readUint64() throws ProtocolException {
+    protected BigInteger readUint64() throws ProtocolException {
         // Java does not have an unsigned 64 bit type. So scrape it off the wire then flip.
         return new BigInteger(Utils.reverseBytes(readBytes(8)));
     }
 
-    long readVarInt() throws ProtocolException {
+    protected long readVarInt() throws ProtocolException {
         return readVarInt(0);
     }
 
-    long readVarInt(int offset) throws ProtocolException {
+    protected long readVarInt(int offset) throws ProtocolException {
         try {
             VarInt varint = new VarInt(payload, cursor + offset);
             cursor += offset + varint.getOriginalSizeInBytes();
@@ -324,7 +326,7 @@ public abstract class Message {
         }
     }
 
-    byte[] readBytes(int length) throws ProtocolException {
+    protected byte[] readBytes(int length) throws ProtocolException {
         if (length > MAX_SIZE) {
             throw new ProtocolException("Claimed value length too large: " + length);
         }
@@ -338,23 +340,23 @@ public abstract class Message {
         }
     }
     
-    byte[] readByteArray() throws ProtocolException {
+    protected byte[] readByteArray() throws ProtocolException {
         long len = readVarInt();
         return readBytes((int)len);
     }
 
-    String readStr() throws ProtocolException {
+    protected String readStr() throws ProtocolException {
         long length = readVarInt();
         return length == 0 ? "" : Utils.toString(readBytes((int) length), "UTF-8"); // optimization for empty strings
     }
 
-    Sha256Hash readHash() throws ProtocolException {
+    protected Sha256Hash readHash() throws ProtocolException {
         // We have to flip it around, as it's been read off the wire in little endian.
         // Not the most efficient way to do this but the clearest.
         return Sha256Hash.wrapReversed(readBytes(32));
     }
 
-    boolean hasMoreBytes() {
+    protected boolean hasMoreBytes() {
         return cursor < payload.length;
     }
 

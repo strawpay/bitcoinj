@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2011 Noa Resare
  * Copyright 2015 Andreas Schildbach
  *
@@ -20,6 +20,9 @@ package org.bitcoinj.core;
 import java.io.IOException;
 import java.io.OutputStream;
 
+/**
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
+ */
 public class Ping extends Message {
     private long nonce;
     private boolean hasNonce;

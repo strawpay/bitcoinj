@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2012 Google Inc.
  * Copyright 2014 Andreas Schildbach
  *
@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.bitcoinj.store;
+package org.bitcoinj.wallet;
 
 import org.bitcoinj.core.*;
 import org.bitcoinj.core.TransactionConfidence.ConfidenceType;
@@ -26,18 +26,14 @@ import org.bitcoinj.signers.LocalTransactionSigner;
 import org.bitcoinj.signers.TransactionSigner;
 import org.bitcoinj.utils.ExchangeRate;
 import org.bitcoinj.utils.Fiat;
-import org.bitcoinj.wallet.DefaultKeyChainFactory;
-import org.bitcoinj.wallet.KeyChainFactory;
-import org.bitcoinj.wallet.KeyChainGroup;
-import org.bitcoinj.wallet.WalletTransaction;
+import org.bitcoinj.wallet.Protos.Wallet.EncryptionType;
+
 import com.google.common.collect.Lists;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.CodedInputStream;
 import com.google.protobuf.TextFormat;
 import com.google.protobuf.WireFormat;
 
-import org.bitcoinj.wallet.Protos;
-import org.bitcoinj.wallet.Protos.Wallet.EncryptionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -366,6 +362,9 @@ public class WalletProtobufSerializer {
                     .build();
             confidenceBuilder.addBroadcastBy(proto);
         }
+        Date lastBroadcastedAt = confidence.getLastBroadcastedAt();
+        if (lastBroadcastedAt != null)
+            confidenceBuilder.setLastBroadcastedAt(lastBroadcastedAt.getTime());
         txBuilder.setConfidence(confidenceBuilder);
     }
 
@@ -620,9 +619,8 @@ public class WalletProtobufSerializer {
             );
             Coin value = inputProto.hasValue() ? Coin.valueOf(inputProto.getValue()) : null;
             TransactionInput input = new TransactionInput(params, tx, scriptBytes, outpoint, value);
-            if (inputProto.hasSequence()) {
-                input.setSequenceNumber(inputProto.getSequence());
-            }
+            if (inputProto.hasSequence())
+                input.setSequenceNumber(0xffffffffL & inputProto.getSequence());
             tx.addInput(input);
         }
 
@@ -779,6 +777,8 @@ public class WalletProtobufSerializer {
             address.setServices(BigInteger.valueOf(proto.getServices()));
             confidence.markBroadcastBy(address);
         }
+        if (confidenceProto.hasLastBroadcastedAt())
+            confidence.setLastBroadcastedAt(new Date(confidenceProto.getLastBroadcastedAt()));
         switch (confidenceProto.getSource()) {
             case SOURCE_SELF: confidence.setSource(TransactionConfidence.Source.SELF); break;
             case SOURCE_NETWORK: confidence.setSource(TransactionConfidence.Source.NETWORK); break;

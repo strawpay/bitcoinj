@@ -1,10 +1,33 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.bitcoinj.protocols.channels;
 
-import org.bitcoinj.core.*;
+import org.bitcoinj.core.Coin;
+import org.bitcoinj.core.Transaction;
+import org.bitcoinj.core.TransactionBroadcaster;
+import org.bitcoinj.core.Utils;
+import org.bitcoinj.wallet.Wallet;
 import org.bitcoin.paymentchannel.Protos;
 import org.easymock.Capture;
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+
+import java.util.Arrays;
+import java.util.Collection;
 
 import static junit.framework.TestCase.assertTrue;
 import static org.bitcoin.paymentchannel.Protos.TwoWayChannelMessage;
@@ -12,10 +35,8 @@ import static org.bitcoin.paymentchannel.Protos.TwoWayChannelMessage.MessageType
 import static org.easymock.EasyMock.*;
 import static org.junit.Assert.assertEquals;
 
+@RunWith(Parameterized.class)
 public class PaymentChannelServerTest {
-
-    private static final int CLIENT_MAJOR_VERSION = 1;
-    private static final long SERVER_MAJOR_VERSION = 1;
     public Wallet wallet;
     public PaymentChannelServer.ServerConnection connection;
     public PaymentChannelServer dut;
@@ -32,6 +53,17 @@ public class PaymentChannelServerTest {
         Utils.setMockClock();
     }
 
+    /**
+     * We use parameterized tests to run the client channel tests with each
+     * version of the channel.
+     */
+    @Parameterized.Parameters(name = "{index}: PaymentChannelServerTest(version {0})")
+    public static Collection<Integer> data() {
+        return Arrays.asList(1, 2);
+    }
+
+    @Parameterized.Parameter
+    public int protocolVersion;
 
     @Test
     public void shouldAcceptDefaultTimeWindow() {
@@ -59,8 +91,7 @@ public class PaymentChannelServerTest {
         connection.sendToClient(capture(initiateCapture));
 
         replay(connection);
-        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
-                Coin.CENT, minTimeWindow, 40000, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, minTimeWindow, 40000, connection);
 
         dut.connectionOpen();
         dut.receiveMessage(message);
@@ -79,8 +110,7 @@ public class PaymentChannelServerTest {
         connection.sendToClient(capture(initiateCapture));
         replay(connection);
 
-        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
-                Coin.CENT, 20000, maxTimeWindow, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, 20000, maxTimeWindow, connection);
 
         dut.connectionOpen();
         dut.receiveMessage(message);
@@ -92,14 +122,12 @@ public class PaymentChannelServerTest {
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowTimeWindowLessThan2h() {
-        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
-                Coin.CENT, 7199, 40000, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, 7199, 40000, connection);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowNegativeTimeWindow() {
-        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
-                Coin.CENT, 40001, 40000, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, 40001, 40000, connection);
     }
 
     @Test
@@ -110,8 +138,7 @@ public class PaymentChannelServerTest {
         replay(connection);
         final int expire = 24 * 60 * 60 - 60;  // This the default defined in paymentchannel.proto
 
-        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
-                Coin.CENT, expire, expire, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, expire, expire, connection);
         dut.connectionOpen();
         long expectedExpire = Utils.currentTimeSeconds() + expire;
         dut.receiveMessage(message);
@@ -125,7 +152,7 @@ public class PaymentChannelServerTest {
         final MessageType type = response.getType();
         assertEquals("Wrong type " + type, MessageType.SERVER_VERSION, type);
         final long major = response.getServerVersion().getMajor();
-        assertEquals("Wrong major version", SERVER_MAJOR_VERSION, major);
+        assertEquals("Wrong major version", protocolVersion, major);
     }
 
     private void assertExpireTime(long expectedExpire, Capture<TwoWayChannelMessage> initiateCapture) {
@@ -138,12 +165,12 @@ public class PaymentChannelServerTest {
     }
 
     private TwoWayChannelMessage createClientVersionMessage() {
-        final Protos.ClientVersion.Builder clientVersion = Protos.ClientVersion.newBuilder().setMajor(CLIENT_MAJOR_VERSION);
+        final Protos.ClientVersion.Builder clientVersion = Protos.ClientVersion.newBuilder().setMajor(protocolVersion);
         return TwoWayChannelMessage.newBuilder().setType(MessageType.CLIENT_VERSION).setClientVersion(clientVersion).build();
     }
 
     private TwoWayChannelMessage createClientVersionMessage(long timeWindow) {
-        final Protos.ClientVersion.Builder clientVersion = Protos.ClientVersion.newBuilder().setMajor(CLIENT_MAJOR_VERSION);
+        final Protos.ClientVersion.Builder clientVersion = Protos.ClientVersion.newBuilder().setMajor(protocolVersion);
         if (timeWindow > 0) clientVersion.setTimeWindowSecs(timeWindow);
         return TwoWayChannelMessage.newBuilder().setType(MessageType.CLIENT_VERSION).setClientVersion(clientVersion).build();
     }

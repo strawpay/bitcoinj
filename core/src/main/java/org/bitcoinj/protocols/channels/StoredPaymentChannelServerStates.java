@@ -19,6 +19,9 @@ package org.bitcoinj.protocols.channels;
 import com.google.common.collect.ImmutableMap;
 import org.bitcoinj.core.*;
 import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.Wallet;
+import org.bitcoinj.wallet.WalletExtension;
+
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.protobuf.ByteString;
@@ -89,9 +92,15 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         this.broadcasterFuture.set(checkNotNull(broadcaster));
     }
 
+    /** Returns this extension from the given wallet, or null if no such extension was added. */
+    @Nullable
+    public static StoredPaymentChannelServerStates getFromWallet(Wallet wallet) {
+        return (StoredPaymentChannelServerStates) wallet.getExtensions().get(EXTENSION_ID);
+    }
+
     /**
      * <p>Closes the given channel using {@link ServerConnectionEventHandler#closeChannel()} and
-     * {@link PaymentChannelServerState#close()} to notify any connected client of channel closure and to complete and
+     * {@link PaymentChannelV1ServerState#close()} to notify any connected client of channel closure and to complete and
      * broadcast the latest payment transaction.</p>
      *
      * <p>Removes the given channel from this set of {@link StoredServerChannel}s and notifies the wallet of a change to
@@ -190,7 +199,13 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 @Override
                 public void run() {
                     log.info("Auto-closing channel: {}", channel);
-                    closeChannel(channel);
+                    try {
+                        closeChannel(channel);
+                    } catch (Exception e) {
+                        // Something went wrong closing the channel - we catch
+                        // here or else we take down the whole Timer.
+                        log.error("Auto-closing channel failed", e);
+                    }
                 }
             }, autocloseTime);
         } finally {
@@ -213,19 +228,29 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
     public byte[] serializeWalletExtension() {
         lock.lock();
         try {
+            final NetworkParameters params = getNetworkParameters();
+            // If we haven't attached to a wallet yet we can't check against network parameters
+            final boolean hasMaxMoney = params != null ? params.hasMaxMoney() : true;
+            final Coin networkMaxMoney = params != null ? params.getMaxMoney() : NetworkParameters.MAX_MONEY;
             ServerState.StoredServerPaymentChannels.Builder builder = ServerState.StoredServerPaymentChannels.newBuilder();
             for (StoredServerChannel channel : mapChannels.values()) {
                 // First a few asserts to make sure things won't break
                 // TODO: Pull MAX_MONEY from network parameters
-                checkState(channel.bestValueToMe.signum() >= 0 && channel.bestValueToMe.compareTo(NetworkParameters.MAX_MONEY) < 0);
+                checkState(channel.bestValueToMe.signum() >= 0 && 
+                        (!hasMaxMoney || channel.bestValueToMe.compareTo(networkMaxMoney) <= 0));
                 checkState(channel.refundTransactionUnlockTimeSecs > 0);
                 checkNotNull(channel.myKey.getPrivKeyBytes());
                 ServerState.StoredServerPaymentChannel.Builder channelBuilder = ServerState.StoredServerPaymentChannel.newBuilder()
+                        .setMajorVersion(channel.majorVersion)
                         .setBestValueToMe(channel.bestValueToMe.value)
                         .setRefundTransactionUnlockTimeSecs(channel.refundTransactionUnlockTimeSecs)
-                        .setContractTransaction(ByteString.copyFrom(channel.contract.bitcoinSerialize()))
-                        .setClientOutput(ByteString.copyFrom(channel.clientOutput.bitcoinSerialize()))
+                        .setContractTransaction(ByteString.copyFrom(channel.contract.unsafeBitcoinSerialize()))
                         .setMyKey(ByteString.copyFrom(channel.myKey.getPrivKeyBytes()));
+                if (channel.majorVersion == 1) {
+                    channelBuilder.setClientOutput(ByteString.copyFrom(channel.clientOutput.unsafeBitcoinSerialize()));
+                } else {
+                    channelBuilder.setClientKey(ByteString.copyFrom(channel.clientKey.getPubKey()));
+                }
                 if (channel.bestValueSignature != null)
                     channelBuilder.setBestValueSignature(ByteString.copyFrom(channel.bestValueSignature));
                 builder.addChannels(channelBuilder);
@@ -244,11 +269,21 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             ServerState.StoredServerPaymentChannels states = ServerState.StoredServerPaymentChannels.parseFrom(data);
             NetworkParameters params = containingWallet.getParams();
             for (ServerState.StoredServerPaymentChannel storedState : states.getChannelsList()) {
+                final int majorVersion = storedState.getMajorVersion();
+                TransactionOutput clientOutput = null;
+                ECKey clientKey = null;
+                if (majorVersion == 1) {
+                    clientOutput = new TransactionOutput(params, null, storedState.getClientOutput().toByteArray(), 0);
+                } else {
+                    clientKey = ECKey.fromPublicOnly(storedState.getClientKey().toByteArray());
+                }
                 StoredServerChannel channel = new StoredServerChannel(null,
+                        majorVersion,
                         params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
-                        new TransactionOutput(params, null, storedState.getClientOutput().toByteArray(), 0),
+                        clientOutput,
                         storedState.getRefundTransactionUnlockTimeSecs(),
                         ECKey.fromPrivate(storedState.getMyKey().toByteArray()),
+                        clientKey,
                         Coin.valueOf(storedState.getBestValueToMe()),
                         storedState.hasBestValueSignature() ? storedState.getBestValueSignature().toByteArray() : null);
                 putChannel(channel);
@@ -270,5 +305,9 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         } finally {
             lock.unlock();
         }
+    }
+
+    private @Nullable NetworkParameters getNetworkParameters() {
+        return wallet != null ? wallet.getNetworkParameters() : null;
     }
 }

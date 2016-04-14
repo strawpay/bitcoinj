@@ -17,9 +17,8 @@
 
 package org.bitcoinj.testing;
 
-import org.bitcoinj.core.listeners.AbstractPeerConnectionEventListener;
-import org.bitcoinj.core.listeners.AbstractPeerDataEventListener;
-import org.bitcoinj.core.listeners.PeerDataEventListener;
+import org.bitcoinj.core.listeners.PeerDisconnectedEventListener;
+import org.bitcoinj.core.listeners.PreMessageReceivedEventListener;
 import org.bitcoinj.core.*;
 import org.bitcoinj.net.*;
 import org.bitcoinj.params.UnitTestParams;
@@ -27,6 +26,8 @@ import org.bitcoinj.store.BlockStore;
 import org.bitcoinj.store.MemoryBlockStore;
 import org.bitcoinj.utils.BriefLogFormatter;
 import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.Wallet;
+
 import com.google.common.util.concurrent.SettableFuture;
 
 import javax.annotation.Nullable;
@@ -47,7 +48,7 @@ import static com.google.common.base.Preconditions.checkState;
  */
 public class TestWithNetworkConnections {
     public static final int PEER_SERVERS = 5;
-    protected final NetworkParameters params = UnitTestParams.get();
+    protected static final NetworkParameters PARAMS = UnitTestParams.get();
     protected Context context;
     protected BlockStore blockStore;
     protected BlockChain blockChain;
@@ -83,17 +84,15 @@ public class TestWithNetworkConnections {
     
     public void setUp(BlockStore blockStore) throws Exception {
         BriefLogFormatter.init();
-
-        context = new Context(params);
-        Wallet.SendRequest.DEFAULT_FEE_PER_KB = Coin.ZERO;
+        Context.propagate(new Context(PARAMS, 100, Coin.ZERO, false));
         this.blockStore = blockStore;
         // Allow subclasses to override the wallet object with their own.
         if (wallet == null) {
-            wallet = new Wallet(params);
+            wallet = new Wallet(PARAMS);
             key = wallet.freshReceiveKey();
-            address = key.toAddress(params);
+            address = key.toAddress(PARAMS);
         }
-        blockChain = new BlockChain(params, wallet, blockStore);
+        blockChain = new BlockChain(PARAMS, wallet, blockStore);
 
         startPeerServers();
         if (clientType == ClientType.NIO_CLIENT_MANAGER || clientType == ClientType.BLOCKING_CLIENT_MANAGER) {
@@ -115,7 +114,7 @@ public class TestWithNetworkConnections {
             @Nullable
             @Override
             public StreamConnection getNewConnection(InetAddress inetAddress, int port) {
-                return new InboundMessageQueuer(params) {
+                return new InboundMessageQueuer(PARAMS) {
                     @Override
                     public void connectionClosed() {
                     }
@@ -132,7 +131,6 @@ public class TestWithNetworkConnections {
     }
 
     public void tearDown() throws Exception {
-        Wallet.SendRequest.DEFAULT_FEE_PER_KB = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE;
         stopPeerServers();
     }
 
@@ -150,7 +148,7 @@ public class TestWithNetworkConnections {
         checkArgument(versionMessage.hasBlockChain());
         final AtomicBoolean doneConnecting = new AtomicBoolean(false);
         final Thread thisThread = Thread.currentThread();
-        peer.addConnectionEventListener(new AbstractPeerConnectionEventListener() {
+        peer.addDisconnectedEventListener(new PeerDisconnectedEventListener() {
             @Override
             public void onPeerDisconnected(Peer p, int peerCount) {
                 synchronized (doneConnecting) {
@@ -208,7 +206,7 @@ public class TestWithNetworkConnections {
     private void inboundPongAndWait(final InboundMessageQueuer p, final long nonce) throws Exception {
         // Receive a ping (that the Peer doesn't see) and wait for it to get through the socket
         final SettableFuture<Void> pongReceivedFuture = SettableFuture.create();
-        PeerDataEventListener listener = new AbstractPeerDataEventListener() {
+        PreMessageReceivedEventListener listener = new PreMessageReceivedEventListener() {
             @Override
             public Message onPreMessageReceived(Peer p, Message m) {
                 if (m instanceof Pong && ((Pong) m).getNonce() == nonce) {
@@ -218,10 +216,10 @@ public class TestWithNetworkConnections {
                 return m;
             }
         };
-        p.peer.addDataEventListener(Threading.SAME_THREAD, listener);
+        p.peer.addPreMessageReceivedEventListener(Threading.SAME_THREAD, listener);
         inbound(p, new Pong(nonce));
         pongReceivedFuture.get();
-        p.peer.removeDataEventListener(listener);
+        p.peer.removePreMessageReceivedEventListener(listener);
     }
 
     protected void pingAndWait(final InboundMessageQueuer p) throws Exception {

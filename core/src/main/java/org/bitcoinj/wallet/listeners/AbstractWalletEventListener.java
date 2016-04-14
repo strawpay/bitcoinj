@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2011 Google Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-package org.bitcoinj.core.listeners;
+package org.bitcoinj.wallet.listeners;
 
 import org.bitcoinj.core.Coin;
 import org.bitcoinj.core.ECKey;
 import org.bitcoinj.core.Transaction;
-import org.bitcoinj.core.Wallet;
 import org.bitcoinj.script.Script;
-import org.bitcoinj.wallet.AbstractKeyChainEventListener;
+import org.bitcoinj.wallet.Wallet;
 
 import java.util.List;
 
@@ -65,6 +64,9 @@ public abstract class AbstractWalletEventListener extends AbstractKeyChainEventL
         onChange();
     }
 
+    /**
+     * Default method called on change events.
+     */
     public void onChange() {
     }
 }

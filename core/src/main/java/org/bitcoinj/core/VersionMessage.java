@@ -25,15 +25,22 @@ import java.net.UnknownHostException;
 import java.util.Locale;
 
 /**
- * A VersionMessage holds information exchanged during connection setup with another peer. Most of the fields are not
+ * <p>A VersionMessage holds information exchanged during connection setup with another peer. Most of the fields are not
  * particularly interesting. The subVer field, since BIP 14, acts as a User-Agent string would. You can and should 
  * append to or change the subVer for your own software so other implementations can identify it, and you can look at
- * the subVer field received from other nodes to see what they are running. <p>
+ * the subVer field received from other nodes to see what they are running.</p>
  *
- * After creating yourself a VersionMessage, you can pass it to {@link PeerGroup#setVersionMessage(VersionMessage)}
- * to ensure it will be used for each new connection.
+ * <p>After creating yourself a VersionMessage, you can pass it to {@link PeerGroup#setVersionMessage(VersionMessage)}
+ * to ensure it will be used for each new connection.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class VersionMessage extends Message {
+
+    /** The version of this library release, as a string. */
+    public static final String BITCOINJ_VERSION = "0.15-SNAPSHOT";
+    /** The value that is prepended to the subVer field of this application. */
+    public static final String LIBRARY_SUBVER = "/bitcoinj:" + BITCOINJ_VERSION + "/";
 
     /** A services flag that denotes whether the peer has a copy of the block chain or not. */
     public static final int NODE_NETWORK = 1;
@@ -74,11 +81,6 @@ public class VersionMessage extends Message {
      * See <a href="https://github.com/bitcoin/bips/blob/master/bip-0037.mediawiki#extensions-to-existing-messages">BIP 37</a>.
      */
     public boolean relayTxesBeforeFilter;
-
-    /** The version of this library release, as a string. */
-    public static final String BITCOINJ_VERSION = "0.14-SNAPSHOT";
-    /** The value that is prepended to the subVer field of this application. */
-    public static final String LIBRARY_SUBVER = "/bitcoinj:" + BITCOINJ_VERSION + "/";
 
     public VersionMessage(NetworkParameters params, byte[] payload) throws ProtocolException {
         super(params, payload, 0);
