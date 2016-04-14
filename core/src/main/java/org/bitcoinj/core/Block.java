@@ -38,8 +38,10 @@ import static org.bitcoinj.core.Sha256Hash.*;
  * <a href="http://www.bitcoin.org/bitcoin.pdf">the Bitcoin technical paper</a> for
  * more detail on blocks. <p/>
  *
- * To get a block, you can either build one from the raw bytes you can get from another implementation, or request one
- * specifically using {@link Peer#getBlock(Sha256Hash)}, or grab one from a downloaded {@link BlockChain}.
+ * <p>To get a block, you can either build one from the raw bytes you can get from another implementation, or request one
+ * specifically using {@link Peer#getBlock(Sha256Hash)}, or grab one from a downloaded {@link BlockChain}.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class Block extends Message {
     /**
@@ -86,8 +88,6 @@ public class Block extends Message {
     public static final long BLOCK_VERSION_BIP66 = 3;
     /** Block version introduced in BIP 65: OP_CHECKLOCKTIMEVERIFY */
     public static final long BLOCK_VERSION_BIP65 = 4;
-    /** Block version bitmask for BIP101: Increase maximum blocksize */
-    public static final long BLOCK_VERSION_MASK_BIP101 = 0x20000007;
 
     // Fields defined as part of the protocol format.
     private long version;
@@ -481,13 +481,13 @@ public class Block extends Message {
         s.append("   hash: ").append(getHashAsString()).append('\n');
         s.append("   version: ").append(version);
         String bips = Joiner.on(", ").skipNulls().join(isBIP34() ? "BIP34" : null, isBIP66() ? "BIP66" : null,
-                isBIP65() ? "BIP65" : null, isBIP101() ? "BIP101" : null);
+                isBIP65() ? "BIP65" : null);
         if (!bips.isEmpty())
             s.append(" (").append(bips).append(')');
         s.append('\n');
         s.append("   previous block: ").append(getPrevBlockHash()).append("\n");
         s.append("   merkle root: ").append(getMerkleRoot()).append("\n");
-        s.append("   time: [").append(time).append("] ").append(Utils.dateTimeFormat(time * 1000)).append("\n");
+        s.append("   time: ").append(time).append(" (").append(Utils.dateTimeFormat(time * 1000)).append(")\n");
         s.append("   difficulty target (nBits): ").append(difficultyTarget).append("\n");
         s.append("   nonce: ").append(nonce).append("\n");
         if (transactions != null && transactions.size() > 0) {
@@ -886,7 +886,7 @@ public class Block extends Message {
                 ScriptBuilder.createOutputScript(ECKey.fromPublicOnly(pubKeyTo)).getProgram()));
         transactions.add(coinbase);
         coinbase.setParent(this);
-        coinbase.length = coinbase.bitcoinSerialize().length;
+        coinbase.length = coinbase.unsafeBitcoinSerialize().length;
         adjustLength(transactions.size(), coinbase.length);
     }
 
@@ -1029,13 +1029,5 @@ public class Block extends Message {
      */
     public boolean isBIP65() {
         return version >= BLOCK_VERSION_BIP65;
-    }
-
-    /**
-     * Returns whether this block conforms to
-     * <a href="https://github.com/bitcoin/bips/blob/master/bip-0101.mediawiki">BIP101: Increase maximum block size</a>.
-     */
-    public boolean isBIP101() {
-        return (version & BLOCK_VERSION_MASK_BIP101) == BLOCK_VERSION_MASK_BIP101;
     }
 }

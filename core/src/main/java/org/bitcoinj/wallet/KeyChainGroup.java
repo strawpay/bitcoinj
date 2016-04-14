@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2014 Mike Hearn
  * Copyright 2014 Andreas Schildbach
  *
@@ -17,14 +17,13 @@
 
 package org.bitcoinj.wallet;
 
-import com.google.common.base.*;
 import com.google.common.collect.*;
 import com.google.protobuf.*;
 import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.*;
 import org.bitcoinj.script.*;
-import org.bitcoinj.store.*;
 import org.bitcoinj.utils.*;
+import org.bitcoinj.wallet.listeners.KeyChainEventListener;
 import org.slf4j.*;
 import org.spongycastle.crypto.params.*;
 
@@ -36,7 +35,7 @@ import java.util.concurrent.*;
 import static com.google.common.base.Preconditions.*;
 
 /**
- * <p>A KeyChainGroup is used by the {@link org.bitcoinj.core.Wallet} and
+ * <p>A KeyChainGroup is used by the {@link org.bitcoinj.wallet.Wallet} and
  * manages: a {@link BasicKeyChain} object (which will normally be empty), and zero or more
  * {@link DeterministicKeyChain}s. A deterministic key chain will be created lazily/on demand
  * when a fresh or current key is requested, possibly being initialized from the private key bytes of the earliest non
@@ -91,15 +90,6 @@ public class KeyChainGroup implements KeyBag {
      */
     public KeyChainGroup(NetworkParameters params, DeterministicKey watchKey) {
         this(params, null, ImmutableList.of(DeterministicKeyChain.watch(watchKey)), null, null);
-    }
-
-    /**
-     * Creates a keychain group with no basic chain, and an HD chain that is watching the given watching key which
-     * was assumed to be first used at the given UNIX time.
-     * This HAS to be an account key as returned by {@link DeterministicKeyChain#getWatchingKey()}.
-     */
-    public KeyChainGroup(NetworkParameters params, DeterministicKey watchKey, long creationTimeSecondsSecs) {
-        this(params, null, ImmutableList.of(DeterministicKeyChain.watch(watchKey, creationTimeSecondsSecs)), null, null);
     }
 
     // Used for deserialization.
@@ -804,11 +794,8 @@ public class KeyChainGroup implements KeyBag {
             for (ECKey key : keys)
                 key.formatKeyWithAddress(includePrivateKeys, builder, params);
         }
-        List<String> chainStrs = Lists.newLinkedList();
-        for (DeterministicKeyChain chain : chains) {
-            chainStrs.add(chain.toString(includePrivateKeys, params));
-        }
-        builder.append(Joiner.on(String.format(Locale.US, "%n")).join(chainStrs));
+        for (DeterministicKeyChain chain : chains)
+            builder.append(chain.toString(includePrivateKeys, params)).append('\n');
         return builder.toString();
     }
 

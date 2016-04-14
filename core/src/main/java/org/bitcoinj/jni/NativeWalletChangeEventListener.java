@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2013 Google Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,17 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.bitcoinj.wallet;
 
-import org.bitcoinj.core.ECKey;
+package org.bitcoinj.jni;
 
-import java.util.List;
+import org.bitcoinj.wallet.Wallet;
+import org.bitcoinj.wallet.listeners.WalletChangeEventListener;
 
-public interface KeyChainEventListener {
-    /**
-     * Called whenever a new key is added to the key chain, whether that be via an explicit addition or due to some
-     * other automatic derivation. See the documentation for your {@link KeyChain} implementation for details on what
-     * can trigger this event.
-     */
-    void onKeysAdded(List<ECKey> keys);
+/**
+ * An event listener that relays events to a native C++ object. A pointer to that object is stored in
+ * this class using JNI on the native side, thus several instances of this can point to different actual
+ * native implementations.
+ */
+public class NativeWalletChangeEventListener implements WalletChangeEventListener {
+    public long ptr;
+
+    @Override
+    public native void onWalletChanged(Wallet wallet);
 }

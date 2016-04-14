@@ -19,6 +19,7 @@ package org.bitcoinj.core;
 
 import com.google.common.base.Objects;
 import org.bitcoinj.script.*;
+import org.bitcoinj.wallet.Wallet;
 import org.slf4j.*;
 
 import javax.annotation.*;
@@ -28,8 +29,10 @@ import java.util.*;
 import static com.google.common.base.Preconditions.*;
 
 /**
- * A TransactionOutput message contains a scriptPubKey that controls who is able to spend its value. It is a sub-part
- * of the Transaction message.
+ * <p>A TransactionOutput message contains a scriptPubKey that controls who is able to spend its value. It is a sub-part
+ * of the Transaction message.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class TransactionOutput extends ChildMessage {
     private static final Logger log = LoggerFactory.getLogger(TransactionOutput.class);
@@ -100,7 +103,7 @@ public class TransactionOutput extends ChildMessage {
         // Negative values obviously make no sense, except for -1 which is used as a sentinel value when calculating
         // SIGHASH_SINGLE signatures, so unfortunately we have to allow that here.
         checkArgument(value.signum() >= 0 || value.equals(Coin.NEGATIVE_SATOSHI), "Negative values not allowed");
-        checkArgument(value.compareTo(NetworkParameters.MAX_MONEY) < 0, "Values larger than MAX_MONEY not allowed");
+        checkArgument(!params.hasMaxMoney() || value.compareTo(params.getMaxMoney()) <= 0, "Values larger than MAX_MONEY not allowed");
         this.value = value.value;
         this.scriptBytes = scriptBytes;
         setParent(parent);
@@ -204,6 +207,16 @@ public class TransactionOutput extends ChildMessage {
     }
 
     /**
+     * Will this transaction be relayable and mined by default miners?
+     */
+    public boolean isDust() {
+        // Transactions that are OP_RETURN can't be dust regardless of their value.
+        if (getScriptPubKey().isOpReturn())
+            return false;
+        return getValue().isLessThan(getMinNonDustValue());
+    }
+
+    /**
      * <p>Gets the minimum value for a txout of this size to be considered non-dust by Bitcoin Core
      * (and thus relayed). See: CTxOut::IsDust() in Bitcoin Core. The assumption is that any output that would
      * consume more than a third of its value in fees is not something the Bitcoin system wants to deal with right now,
@@ -213,23 +226,21 @@ public class TransactionOutput extends ChildMessage {
      * <p>You probably should use {@link org.bitcoinj.core.TransactionOutput#getMinNonDustValue()} which uses
      * a safe fee-per-kb by default.</p>
      *
-     * @param feePerKbRequired The fee required per kilobyte. Note that this is the same as Bitcoin Core's -minrelaytxfee * 3
-     *                         If you want a safe default, use {@link Transaction#REFERENCE_DEFAULT_MIN_TX_FEE}*3
+     * @param feePerKb The fee required per kilobyte. Note that this is the same as Bitcoin Core's -minrelaytxfee * 3
      */
-    public Coin getMinNonDustValue(Coin feePerKbRequired) {
+    public Coin getMinNonDustValue(Coin feePerKb) {
         // A typical output is 33 bytes (pubkey hash + opcodes) and requires an input of 148 bytes to spend so we add
         // that together to find out the total amount of data used to transfer this amount of value. Note that this
         // formula is wrong for anything that's not a pay-to-address output, unfortunately, we must follow Bitcoin Core's
         // wrongness in order to ensure we're considered standard. A better formula would either estimate the
         // size of data needed to satisfy all different script types, or just hard code 33 below.
-        final long size = this.bitcoinSerialize().length + 148;
-        Coin[] nonDustAndRemainder = feePerKbRequired.multiply(size).divideAndRemainder(1000);
-        return nonDustAndRemainder[1].equals(Coin.ZERO) ? nonDustAndRemainder[0] : nonDustAndRemainder[0].add(Coin.SATOSHI);
+        final long size = this.unsafeBitcoinSerialize().length + 148;
+        return feePerKb.multiply(size).divide(1000);
     }
 
     /**
      * Returns the minimum value for this output to be considered "not dust", i.e. the transaction will be relayable
-     * and mined by default miners. For normal pay to address outputs, this is 546 satoshis, the same as
+     * and mined by default miners. For normal pay to address outputs, this is 2730 satoshis, the same as
      * {@link Transaction#MIN_NONDUST_OUTPUT}.
      */
     public Coin getMinNonDustValue() {

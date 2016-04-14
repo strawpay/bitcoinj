@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2011 Google Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,31 +17,15 @@
 package org.bitcoinj.core.listeners;
 
 import org.bitcoinj.core.Peer;
-import org.bitcoinj.core.PeerAddress;
-import java.util.Set;
 
 /**
- * <p>Implementors can listen to events like blocks being downloaded/transactions being broadcast/connect/disconnects,
- * they can pre-filter messages before they are procesesed by a {@link Peer} or {@link PeerGroup}, and they can
- * provide transactions to remote peers when they ask for them.</p>
+ * <p>Implementors can listen to events like peer discovery, connect or disconnects.</p>
+ *
+ * @deprecated Use the single event interfaces instead
  */
-public interface PeerConnectionEventListener {
-    /**
-     * <p>Called when peers are discovered, this happens at startup of {@link PeerGroup} or if we run out of
-     * suitable {@link Peer}s to connect to.</p>
-     *
-     * @param peerAddresses the set of discovered {@link PeerAddress}es
-     */
-    void onPeersDiscovered(Set<PeerAddress> peerAddresses);
-
-    /**
-     * Called when a peer is connected. If this listener is registered to a {@link Peer} instead of a {@link PeerGroup},
-     * peerCount will always be 1.
-     *
-     * @param peer
-     * @param peerCount the total number of connected peers
-     */
-    void onPeerConnected(Peer peer, int peerCount);
+@Deprecated
+public interface PeerConnectionEventListener extends PeerConnectedEventListener,
+        PeerDiscoveredEventListener, PeerDisconnectedEventListener {
 
     /**
      * Called when a peer is disconnected. Note that this won't be called if the listener is registered on a

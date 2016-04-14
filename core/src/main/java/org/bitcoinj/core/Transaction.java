@@ -23,9 +23,9 @@ import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.script.ScriptOpCodes;
 import org.bitcoinj.utils.ExchangeRate;
+import org.bitcoinj.wallet.Wallet;
 import org.bitcoinj.wallet.WalletTransaction.Pool;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
@@ -54,6 +54,8 @@ import java.math.BigInteger;
  * Whether to trust a transaction is something that needs to be decided on a case by case basis - a rule that makes
  * sense for selling MP3s might not make sense for selling cars, or accepting payments from a family member. If you
  * are building a wallet, how to present confidence to your users is something to consider carefully.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class Transaction extends ChildMessage {
     /**
@@ -92,9 +94,15 @@ public class Transaction extends ChildMessage {
     public static final int MAX_STANDARD_TX_SIZE = 100000;
 
     /**
-     * If fee is lower than this value (in satoshis), Bitcoin Core will treat it as if there were no fee.
+     * If feePerKb is lower than this, Bitcoin Core will treat it as if there were no fee.
      */
-    public static final Coin REFERENCE_DEFAULT_MIN_TX_FEE = Coin.valueOf(5000); // satoshis
+    public static final Coin REFERENCE_DEFAULT_MIN_TX_FEE = Coin.valueOf(5000); // 0.05 mBTC
+
+    /**
+     * If using this feePerKb, transactions will get confirmed within the next couple of blocks.
+     * This should be adjusted from time to time. Last adjustment: March 2016.
+     */
+    public static final Coin DEFAULT_TX_FEE = Coin.valueOf(50000); // 0.5 mBTC
 
     /**
      * Any standard (ie pay-to-address) output smaller than this value (in satoshis) will most likely be rejected by the network.
@@ -232,8 +240,7 @@ public class Transaction extends ChildMessage {
     @Override
     public Sha256Hash getHash() {
         if (hash == null) {
-            byte[] bits = bitcoinSerialize();
-            hash = Sha256Hash.wrapReversed(Sha256Hash.hashTwice(bits));
+            hash = Sha256Hash.wrapReversed(Sha256Hash.hashTwice(unsafeBitcoinSerialize()));
         }
         return hash;
     }
@@ -266,29 +273,6 @@ public class Transaction extends ChildMessage {
         }
 
         return inputTotal;
-    }
-
-    /*
-     * If isSpent - check that all my outputs spent, otherwise check that there at least
-     * one unspent.
-     */
-    boolean isConsistent(TransactionBag transactionBag, boolean isSpent) {
-        boolean isActuallySpent = true;
-        for (TransactionOutput o : outputs) {
-            if (o.isAvailableForSpending()) {
-                if (o.isMineOrWatched(transactionBag)) isActuallySpent = false;
-                if (o.getSpentBy() != null) {
-                    log.error("isAvailableForSpending != spentBy");
-                    return false;
-                }
-            } else {
-                if (o.getSpentBy() == null) {
-                    log.error("isAvailableForSpending != spentBy");
-                    return false;
-                }
-            }
-        }
-        return isActuallySpent == isSpent;
     }
 
     /**
@@ -482,16 +466,37 @@ public class Transaction extends ChildMessage {
     /**
      * These constants are a part of a scriptSig signature on the inputs. They define the details of how a
      * transaction can be redeemed, specifically, they control how the hash of the transaction is calculated.
-     * <p/>
-     * In Bitcoin Core, this enum also has another flag, SIGHASH_ANYONECANPAY. In this implementation,
-     * that's kept separate. Only SIGHASH_ALL is actually used in Bitcoin Core today. The other flags
-     * exist to allow for distributed contracts.
      */
     public enum SigHash {
-        ALL,         // 1
-        NONE,        // 2
-        SINGLE,      // 3
+        ALL(1),
+        NONE(2),
+        SINGLE(3),
+        ANYONECANPAY(0x80), // Caution: Using this type in isolation is non-standard. Treated similar to ANYONECANPAY_ALL.
+        ANYONECANPAY_ALL(0x81),
+        ANYONECANPAY_NONE(0x82),
+        ANYONECANPAY_SINGLE(0x83),
+        UNSET(0); // Caution: Using this type in isolation is non-standard. Treated similar to ALL.
+
+        public final int value;
+
+        /**
+         * @param value
+         */
+        private SigHash(final int value) {
+            this.value = value;
+        }
+
+        /**
+         * @return the value as a byte
+         */
+        public byte byteValue() {
+            return (byte) this.value;
+        }
     }
+
+    /**
+     * @deprecated Instead use SigHash.ANYONECANPAY.value or SigHash.ANYONECANPAY.byteValue() as appropriate.
+     */
     public static final byte SIGHASH_ANYONECANPAY_VALUE = (byte) 0x80;
 
     @Override
@@ -627,27 +632,28 @@ public class Transaction extends ChildMessage {
      * @param chain If provided, will be used to estimate lock times (if set). Can be null.
      */
     public String toString(@Nullable AbstractBlockChain chain) {
-        // Basic info about the tx.
         StringBuilder s = new StringBuilder();
-        s.append(String.format(Locale.US, "  %s: %s%n", getHashAsString(), getConfidence()));
+        s.append("  ").append(getHashAsString()).append('\n');
+        if (hasConfidence())
+            s.append("  confidence: ").append(getConfidence()).append('\n');
         if (isTimeLocked()) {
-            String time;
+            s.append("  time locked until ");
             if (lockTime < LOCKTIME_THRESHOLD) {
-                time = "block " + lockTime;
+                s.append("block ").append(lockTime);
                 if (chain != null) {
-                    time = time + " (estimated to be reached at " +
-                            chain.estimateBlockTime((int)lockTime).toString() + ")";
+                    s.append(" (estimated to be reached at ")
+                            .append(Utils.dateTimeFormat(chain.estimateBlockTime((int) lockTime))).append(')');
                 }
             } else {
-                time = new Date(lockTime*1000).toString();
+                s.append(Utils.dateTimeFormat(lockTime * 1000));
             }
-            s.append(String.format(Locale.US, "  time locked until %s%n", time));
+            s.append('\n');
         }
         if (isOptInFullRBF()) {
-            s.append("  opts into full replace-by-fee%n");
+            s.append("  opts into full replace-by-fee\n");
         }
         if (inputs.size() == 0) {
-            s.append(String.format(Locale.US, "  INCOMPLETE: No inputs!%n"));
+            s.append("  INCOMPLETE: No inputs!\n");
             return s.toString();
         }
         if (isCoinBase()) {
@@ -685,14 +691,15 @@ public class Transaction extends ChildMessage {
                         s.append(Utils.HEX.encode(scriptPubKey.getPubKeyHash()));
                     }
                 }
-                String flags = Joiner.on(", ").skipNulls().join(in.hasSequence() ? "has sequence" : null,
-                        in.isOptInFullRBF() ? "opts into full RBF" : null);
-                if (!flags.isEmpty())
-                    s.append("\n          (").append(flags).append(')');
+                if (in.hasSequence()) {
+                    s.append("\n          sequence:").append(Long.toHexString(in.getSequenceNumber()));
+                    if (in.isOptInFullRBF())
+                        s.append(", opts into full RBF");
+                }
             } catch (Exception e) {
                 s.append("[exception: ").append(e.getMessage()).append("]");
             }
-            s.append(String.format(Locale.US, "%n"));
+            s.append('\n');
         }
         for (TransactionOutput out : outputs) {
             s.append("     ");
@@ -712,13 +719,16 @@ public class Transaction extends ChildMessage {
             } catch (Exception e) {
                 s.append("[exception: ").append(e.getMessage()).append("]");
             }
-            s.append(String.format(Locale.US, "%n"));
+            s.append('\n');
         }
-        Coin fee = getFee();
-        if (fee != null)
-            s.append("     fee  ").append(fee.toFriendlyString()).append(String.format(Locale.US, "%n"));
+        final Coin fee = getFee();
+        if (fee != null) {
+            final int size = unsafeBitcoinSerialize().length;
+            s.append("     fee  ").append(fee.multiply(1000).divide(size).toFriendlyString()).append("/kB, ")
+                    .append(fee.toFriendlyString()).append(" for ").append(size).append(" bytes\n");
+        }
         if (purpose != null)
-            s.append("     prps ").append(purpose).append(String.format(Locale.US, "%n"));
+            s.append("     prps ").append(purpose).append('\n');
         return s.toString();
     }
 
@@ -733,7 +743,7 @@ public class Transaction extends ChildMessage {
         }
         inputs.clear();
         // You wanted to reserialize, right?
-        this.length = this.bitcoinSerialize().length;
+        this.length = this.unsafeBitcoinSerialize().length;
     }
 
     /**
@@ -821,7 +831,7 @@ public class Transaction extends ChildMessage {
         }
         outputs.clear();
         // You wanted to reserialize, right?
-        this.length = this.bitcoinSerialize().length;
+        this.length = this.unsafeBitcoinSerialize().length;
     }
 
     /**
@@ -872,7 +882,7 @@ public class Transaction extends ChildMessage {
      * @param anyoneCanPay Signing mode, see the SigHash enum for documentation.
      * @return A newly calculated signature object that wraps the r, s and sighash components.
      */
-    public synchronized TransactionSignature calculateSignature(int inputIndex, ECKey key,
+    public TransactionSignature calculateSignature(int inputIndex, ECKey key,
                                                                 byte[] redeemScript,
                                                                 SigHash hashType, boolean anyoneCanPay) {
         Sha256Hash hash = hashForSignature(inputIndex, redeemScript, hashType, anyoneCanPay);
@@ -891,7 +901,7 @@ public class Transaction extends ChildMessage {
      * @param anyoneCanPay Signing mode, see the SigHash enum for documentation.
      * @return A newly calculated signature object that wraps the r, s and sighash components.
      */
-    public synchronized  TransactionSignature calculateSignature(int inputIndex, ECKey key,
+    public TransactionSignature calculateSignature(int inputIndex, ECKey key,
                                                                  Script redeemScript,
                                                                  SigHash hashType, boolean anyoneCanPay) {
         Sha256Hash hash = hashForSignature(inputIndex, redeemScript.getProgram(), hashType, anyoneCanPay);
@@ -912,7 +922,7 @@ public class Transaction extends ChildMessage {
      * @param type Should be SigHash.ALL
      * @param anyoneCanPay should be false.
      */
-    public synchronized Sha256Hash hashForSignature(int inputIndex, byte[] redeemScript,
+    public Sha256Hash hashForSignature(int inputIndex, byte[] redeemScript,
                                                     SigHash type, boolean anyoneCanPay) {
         byte sigHashType = (byte) TransactionSignature.calcSigHashValue(type, anyoneCanPay);
         return hashForSignature(inputIndex, redeemScript, sigHashType);
@@ -932,7 +942,7 @@ public class Transaction extends ChildMessage {
      * @param type Should be SigHash.ALL
      * @param anyoneCanPay should be false.
      */
-    public synchronized Sha256Hash hashForSignature(int inputIndex, Script redeemScript,
+    public Sha256Hash hashForSignature(int inputIndex, Script redeemScript,
                                                     SigHash type, boolean anyoneCanPay) {
         int sigHash = TransactionSignature.calcSigHashValue(type, anyoneCanPay);
         return hashForSignature(inputIndex, redeemScript.getProgram(), (byte) sigHash);
@@ -942,24 +952,22 @@ public class Transaction extends ChildMessage {
      * This is required for signatures which use a sigHashType which cannot be represented using SigHash and anyoneCanPay
      * See transaction c99c49da4c38af669dea436d3e73780dfdb6c1ecf9958baa52960e8baee30e73, which has sigHashType 0
      */
-    public synchronized Sha256Hash hashForSignature(int inputIndex, byte[] connectedScript, byte sigHashType) {
+    public Sha256Hash hashForSignature(int inputIndex, byte[] connectedScript, byte sigHashType) {
         // The SIGHASH flags are used in the design of contracts, please see this page for a further understanding of
         // the purposes of the code in this method:
         //
         //   https://en.bitcoin.it/wiki/Contracts
 
         try {
-            // Store all the input scripts and clear them in preparation for signing. If we're signing a fresh
+            // Create a copy of this transaction to operate upon because we need make changes to the inputs and outputs.
+            // It would not be thread-safe to change the attributes of the transaction object itself.
+            Transaction tx = this.params.getDefaultSerializer().makeTransaction(this.bitcoinSerialize());
+
+            // Clear input scripts in preparation for signing. If we're signing a fresh
             // transaction that step isn't very helpful, but it doesn't add much cost relative to the actual
             // EC math so we'll do it anyway.
-            //
-            // Also store the input sequence numbers in case we are clearing them with SigHash.NONE/SINGLE
-            byte[][] inputScripts = new byte[inputs.size()][];
-            long[] inputSequenceNumbers = new long[inputs.size()];
-            for (int i = 0; i < inputs.size(); i++) {
-                inputScripts[i] = inputs.get(i).getScriptBytes();
-                inputSequenceNumbers[i] = inputs.get(i).getSequenceNumber();
-                inputs.get(i).clearScriptBytes();
+            for (int i = 0; i < tx.inputs.size(); i++) {
+                tx.inputs.get(i).clearScriptBytes();
             }
 
             // This step has no purpose beyond being synchronized with Bitcoin Core's bugs. OP_CODESEPARATOR
@@ -974,58 +982,49 @@ public class Transaction extends ChildMessage {
             // Set the input to the script of its output. Bitcoin Core does this but the step has no obvious purpose as
             // the signature covers the hash of the prevout transaction which obviously includes the output script
             // already. Perhaps it felt safer to him in some way, or is another leftover from how the code was written.
-            TransactionInput input = inputs.get(inputIndex);
+            TransactionInput input = tx.inputs.get(inputIndex);
             input.setScriptBytes(connectedScript);
 
-            ArrayList<TransactionOutput> outputs = this.outputs;
-            if ((sigHashType & 0x1f) == (SigHash.NONE.ordinal() + 1)) {
+            if ((sigHashType & 0x1f) == SigHash.NONE.value) {
                 // SIGHASH_NONE means no outputs are signed at all - the signature is effectively for a "blank cheque".
-                this.outputs = new ArrayList<TransactionOutput>(0);
+                tx.outputs = new ArrayList<TransactionOutput>(0);
                 // The signature isn't broken by new versions of the transaction issued by other parties.
-                for (int i = 0; i < inputs.size(); i++)
+                for (int i = 0; i < tx.inputs.size(); i++)
                     if (i != inputIndex)
-                        inputs.get(i).setSequenceNumber(0);
-            } else if ((sigHashType & 0x1f) == (SigHash.SINGLE.ordinal() + 1)) {
+                        tx.inputs.get(i).setSequenceNumber(0);
+            } else if ((sigHashType & 0x1f) == SigHash.SINGLE.value) {
                 // SIGHASH_SINGLE means only sign the output at the same index as the input (ie, my output).
-                if (inputIndex >= this.outputs.size()) {
+                if (inputIndex >= tx.outputs.size()) {
                     // The input index is beyond the number of outputs, it's a buggy signature made by a broken
                     // Bitcoin implementation. Bitcoin Core also contains a bug in handling this case:
                     // any transaction output that is signed in this case will result in both the signed output
                     // and any future outputs to this public key being steal-able by anyone who has
                     // the resulting signature and the public key (both of which are part of the signed tx input).
-                    // Put the transaction back to how we found it.
-                    //
-                    // TODO: Only allow this to happen if we are checking a signature, not signing a transactions
-                    for (int i = 0; i < inputs.size(); i++) {
-                        inputs.get(i).setScriptBytes(inputScripts[i]);
-                        inputs.get(i).setSequenceNumber(inputSequenceNumbers[i]);
-                    }
-                    this.outputs = outputs;
+
                     // Bitcoin Core's bug is that SignatureHash was supposed to return a hash and on this codepath it
                     // actually returns the constant "1" to indicate an error, which is never checked for. Oops.
                     return Sha256Hash.wrap("0100000000000000000000000000000000000000000000000000000000000000");
                 }
                 // In SIGHASH_SINGLE the outputs after the matching input index are deleted, and the outputs before
                 // that position are "nulled out". Unintuitively, the value in a "null" transaction is set to -1.
-                this.outputs = new ArrayList<TransactionOutput>(this.outputs.subList(0, inputIndex + 1));
+                tx.outputs = new ArrayList<TransactionOutput>(tx.outputs.subList(0, inputIndex + 1));
                 for (int i = 0; i < inputIndex; i++)
-                    this.outputs.set(i, new TransactionOutput(params, this, Coin.NEGATIVE_SATOSHI, new byte[] {}));
+                    tx.outputs.set(i, new TransactionOutput(tx.params, tx, Coin.NEGATIVE_SATOSHI, new byte[] {}));
                 // The signature isn't broken by new versions of the transaction issued by other parties.
-                for (int i = 0; i < inputs.size(); i++)
+                for (int i = 0; i < tx.inputs.size(); i++)
                     if (i != inputIndex)
-                        inputs.get(i).setSequenceNumber(0);
+                        tx.inputs.get(i).setSequenceNumber(0);
             }
 
-            ArrayList<TransactionInput> inputs = this.inputs;
-            if ((sigHashType & SIGHASH_ANYONECANPAY_VALUE) == SIGHASH_ANYONECANPAY_VALUE) {
+            if ((sigHashType & SigHash.ANYONECANPAY.value) == SigHash.ANYONECANPAY.value) {
                 // SIGHASH_ANYONECANPAY means the signature in the input is not broken by changes/additions/removals
                 // of other inputs. For example, this is useful for building assurance contracts.
-                this.inputs = new ArrayList<TransactionInput>();
-                this.inputs.add(input);
+                tx.inputs = new ArrayList<TransactionInput>();
+                tx.inputs.add(input);
             }
 
-            ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(length == UNKNOWN_LENGTH ? 256 : length + 4);
-            bitcoinSerialize(bos);
+            ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(tx.length == UNKNOWN_LENGTH ? 256 : tx.length + 4);
+            tx.bitcoinSerialize(bos);
             // We also have to write a hash type (sigHashType is actually an unsigned char)
             uint32ToByteStreamLE(0x000000ff & sigHashType, bos);
             // Note that this is NOT reversed to ensure it will be signed correctly. If it were to be printed out
@@ -1033,13 +1032,6 @@ public class Transaction extends ChildMessage {
             Sha256Hash hash = Sha256Hash.twiceOf(bos.toByteArray());
             bos.close();
 
-            // Put the transaction back to how we found it.
-            this.inputs = inputs;
-            for (int i = 0; i < inputs.size(); i++) {
-                inputs.get(i).setScriptBytes(inputScripts[i]);
-                inputs.get(i).setSequenceNumber(inputSequenceNumbers[i]);
-            }
-            this.outputs = outputs;
             return hash;
         } catch (IOException e) {
             throw new RuntimeException(e);  // Cannot happen.
@@ -1084,7 +1076,7 @@ public class Transaction extends ChildMessage {
                 break;
             }
         }
-        if (!seqNumSet || inputs.isEmpty()) {
+        if (lockTime != 0 && (!seqNumSet || inputs.isEmpty())) {
             // At least one input must have a non-default sequence number for lock times to have any effect.
             // For instance one of them can be set to zero to make this feature work.
             log.warn("You are setting the lock time on a transaction but none of the inputs have non-default sequence numbers. This will not do what you expect!");
@@ -1255,8 +1247,7 @@ public class Transaction extends ChildMessage {
                 if (output.getValue().signum() < 0)    // getValue() can throw IllegalStateException
                     throw new VerificationException.NegativeValueOutput();
                 valueOut = valueOut.add(output.getValue());
-                // Duplicate the MAX_MONEY check from Coin.add() in case someone accidentally removes it.
-                if (valueOut.compareTo(NetworkParameters.MAX_MONEY) > 0)
+                if (params.hasMaxMoney() && valueOut.compareTo(params.getMaxMoney()) > 0)
                     throw new IllegalArgumentException();
             }
         } catch (IllegalStateException e) {

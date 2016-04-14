@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.bitcoinj.examples;
 
 import java.io.IOException;
@@ -105,7 +106,7 @@ public class GenerateLowSTests {
             + inputTransaction.getHashAsString() + "\", "
             + output.getIndex() + ", \""
             + scriptToString(output.getScriptPubKey()) + "\"]],\n"
-            + "\"" + Utils.HEX.encode(proposedTransaction.partialTx.bitcoinSerialize()) + "\", \""
+            + "\"" + Utils.HEX.encode(proposedTransaction.partialTx.unsafeBitcoinSerialize()) + "\", \""
             + Script.VerifyFlag.P2SH.name() + "," + Script.VerifyFlag.LOW_S.name() + "\"],");
 
         final BigInteger highS = HIGH_S_DIFFERENCE.subtract(signature.s);
@@ -120,7 +121,7 @@ public class GenerateLowSTests {
             + inputTransaction.getHashAsString() + "\", "
             + output.getIndex() + ", \""
             + scriptToString(output.getScriptPubKey()) + "\"]],\n"
-            + "\"" + Utils.HEX.encode(proposedTransaction.partialTx.bitcoinSerialize()) + "\", \""
+            + "\"" + Utils.HEX.encode(proposedTransaction.partialTx.unsafeBitcoinSerialize()) + "\", \""
             + Script.VerifyFlag.P2SH.name() + "\"],");
 
         // Lastly a conventional high-S transaction with the LOW_S flag, for the tx_invalid.json set
@@ -129,7 +130,7 @@ public class GenerateLowSTests {
             + inputTransaction.getHashAsString() + "\", "
             + output.getIndex() + ", \""
             + scriptToString(output.getScriptPubKey()) + "\"]],\n"
-            + "\"" + Utils.HEX.encode(proposedTransaction.partialTx.bitcoinSerialize()) + "\", \""
+            + "\"" + Utils.HEX.encode(proposedTransaction.partialTx.unsafeBitcoinSerialize()) + "\", \""
             + Script.VerifyFlag.P2SH.name() + "," + Script.VerifyFlag.LOW_S.name() + "\"],");
     }
 

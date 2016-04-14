@@ -20,8 +20,7 @@ package org.bitcoinj.protocols.channels;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
 import org.bitcoinj.utils.Threading;
-import org.bitcoinj.wallet.AllowUnconfirmedCoinSelector;
-import org.bitcoinj.wallet.CoinSelector;
+import org.bitcoinj.wallet.Wallet;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -55,11 +54,11 @@ import static com.google.common.base.Preconditions.checkState;
  */
 public class PaymentChannelClient implements IPaymentChannelClient {
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(PaymentChannelClient.class);
-    private static final int CLIENT_MAJOR_VERSION = 1;
-    public final int CLIENT_MINOR_VERSION = 0;
-    private static final int SERVER_MAJOR_VERSION = 1;
 
     protected final ReentrantLock lock = Threading.lock("channelclient");
+
+    // Used to track the negotiated version number
+    @GuardedBy("lock") private int majorVersion;
 
     @GuardedBy("lock") private final ClientConnection conn;
 
@@ -82,6 +81,42 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     }
     @GuardedBy("lock") private InitStep step = InitStep.WAITING_FOR_CONNECTION_OPEN;
 
+    public enum VersionSelector {
+        VERSION_1,
+        VERSION_2_ALLOW_1,
+        VERSION_2;
+
+        public int getRequestedMajorVersion() {
+            switch (this) {
+                case VERSION_1:
+                    return 1;
+                case VERSION_2_ALLOW_1:
+                case VERSION_2:
+                default:
+                    return 2;
+            }
+        }
+
+        public int getRequestedMinorVersion() {
+            return 0;
+        }
+
+        public boolean isServerVersionAccepted(int major, int minor) {
+            switch (this) {
+                case VERSION_1:
+                    return major == 1;
+                case VERSION_2_ALLOW_1:
+                    return major == 1 || major == 2;
+                case VERSION_2:
+                    return major == 2;
+                default:
+                    return false;
+            }
+        }
+    }
+
+    private final VersionSelector versionSelector;
+
     // Will either hold the StoredClientChannel of this channel or null after connectionOpen
     private StoredClientChannel storedChannel;
     // An arbitrary hash which identifies this channel (specified by the API user)
@@ -93,14 +128,11 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     // Information used during channel initialization to send to the server or check what the server sends to us
     private final ECKey myKey;
     private final Coin maxValue;
-    private final Coin maxChannelFee;
 
     private Coin missing;
 
     // key to decrypt myKey, if it is encrypted, during setup.
     private KeyParameter userKeySetup;
-
-    private CoinSelector  coinSelector;
 
     private final long timeWindow;
 
@@ -135,10 +167,36 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      */
+    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId,
+                                ClientConnection conn) {
+        this(wallet,myKey,maxValue,serverId, conn, VersionSelector.VERSION_2_ALLOW_1);
+    }
 
-    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, ClientConnection conn) {
-        this(wallet,myKey,Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,maxValue,serverId, DEFAULT_TIME_WINDOW,
-                null, null, conn);
+    /**
+     * Constructs a new channel manager which waits for {@link PaymentChannelClient#connectionOpen()} before acting.
+     * A default time window of {@link #DEFAULT_TIME_WINDOW} will be used.
+     *
+     * @param wallet The wallet which will be paid from, and where completed transactions will be committed.
+     *               Must already have a {@link StoredPaymentChannelClientStates} object in its extensions set.
+     * @param myKey A freshly generated keypair used for the multisig contract and refund output.
+     * @param maxValue The maximum value the server is allowed to request that we lock into this channel until the
+     *                 refund transaction unlocks. Note that if there is a previously open channel, the refund
+     *                 transaction used in this channel may be larger than maxValue. Thus, maxValue is not a method for
+     *                 limiting the amount payable through this channel.
+     * @param serverId An arbitrary hash representing this channel. This must uniquely identify the server. If an
+     *                 existing stored channel exists in the wallet's {@link StoredPaymentChannelClientStates}, then an
+     *                 attempt will be made to resume that channel.
+     * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
+     *             the server)
+     * @param versionSelector An enum indicating which versions to support:
+     *                        VERSION_1: use only version 1 of the protocol
+     *                        VERSION_2_ALLOW_1: suggest version 2 but allow downgrade to version 1
+     *                        VERSION_2: suggest version 2 and enforce use of version 2
+     *
+     */
+    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId,
+                                ClientConnection conn, VersionSelector versionSelector) {
+      this(wallet,myKey,maxValue,serverId, DEFAULT_TIME_WINDOW, null, conn, versionSelector);
     }
 
     /**
@@ -147,7 +205,6 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      * @param wallet The wallet which will be paid from, and where completed transactions will be committed.
      *               Must already have a {@link StoredPaymentChannelClientStates} object in its extensions set.
      * @param myKey A freshly generated keypair used for the multisig contract and refund output.
-     * @param maxChannelFee A fee to the server will be accepted up to this amount..
      * @param maxValue The maximum value the server is allowed to request that we lock into this channel until the
      *                 refund transaction unlocks. Note that if there is a previously open channel, the refund
      *                 transaction used in this channel may be larger than maxValue. Thus, maxValue is not a method for
@@ -159,22 +216,49 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *                   a proposal to the server. The server may in turn propose something different.
      *                   See {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#acceptExpireTime(long)}
      * @param userKeySetup Key derived from a user password, used to decrypt myKey, if it is encrypted, during setup.
-     * @param coinSelector Use this to specify the coins to use for setting up channels.
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      */
-    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxChannelFee, Coin maxValue, Sha256Hash serverId, long timeWindow,
-                                @Nullable KeyParameter userKeySetup, @Nullable CoinSelector coinSelector, ClientConnection conn) {
+    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
+                                @Nullable KeyParameter userKeySetup, ClientConnection conn) {
+        this(wallet, myKey, maxValue, serverId, timeWindow, userKeySetup, conn, VersionSelector.VERSION_2_ALLOW_1);
+    }
+
+    /**
+     * Constructs a new channel manager which waits for {@link PaymentChannelClient#connectionOpen()} before acting.
+     *
+     * @param wallet The wallet which will be paid from, and where completed transactions will be committed.
+     *               Must already have a {@link StoredPaymentChannelClientStates} object in its extensions set.
+     * @param myKey A freshly generated keypair used for the multisig contract and refund output.
+     * @param maxValue The maximum value the server is allowed to request that we lock into this channel until the
+     *                 refund transaction unlocks. Note that if there is a previously open channel, the refund
+     *                 transaction used in this channel may be larger than maxValue. Thus, maxValue is not a method for
+     *                 limiting the amount payable through this channel.
+     * @param serverId An arbitrary hash representing this channel. This must uniquely identify the server. If an
+     *                 existing stored channel exists in the wallet's {@link StoredPaymentChannelClientStates}, then an
+     *                 attempt will be made to resume that channel.
+     * @param timeWindow The time in seconds, relative to now, on how long this channel should be kept open. Note that is is
+     *                   a proposal to the server. The server may in turn propose something different.
+     *                   See {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#acceptExpireTime(long)}
+     * @param userKeySetup Key derived from a user password, used to decrypt myKey, if it is encrypted, during setup.
+     * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
+     *             the server)
+     * @param versionSelector An enum indicating which versions to support:
+     *                        VERSION_1: use only version 1 of the protocol
+     *                        VERSION_2_ALLOW_1: suggest version 2 but allow downgrade to version 1
+     *                        VERSION_2: suggest version 2 and enforce use of version 2
+     */
+    public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
+                                @Nullable KeyParameter userKeySetup, ClientConnection conn, VersionSelector versionSelector) {
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(myKey);
-        this.maxChannelFee = checkNotNull(maxChannelFee);
         this.maxValue = checkNotNull(maxValue);
         this.serverId = checkNotNull(serverId);
         checkState(timeWindow >= 0);
         this.timeWindow = timeWindow;
         this.conn = checkNotNull(conn);
         this.userKeySetup = userKeySetup;
-        this.coinSelector = coinSelector != null ? coinSelector : AllowUnconfirmedCoinSelector.get();
+        this.versionSelector = versionSelector;
     }
 
     /** 
@@ -213,21 +297,30 @@ public class PaymentChannelClient implements IPaymentChannelClient {
             return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
         }
 
-        if (initiate.getMinPayment() != maxChannelFee.value) {
-            log.debug("Server requested a min payment of {} but we expected up to {}", initiate.getMinPayment(), maxChannelFee);
-            if (initiate.getMinPayment() > maxChannelFee.value) {
-                log.error("Server requested a min payment of {} but we expected up to {}", initiate.getMinPayment(), maxChannelFee);
-                errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
-                errorBuilder.setExpectedValue(maxChannelFee.value);
-                missing = Coin.valueOf(initiate.getMinPayment() - maxChannelFee.value);
-                return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
-            }
+        // For now we require a hard-coded value. In future this will have to get more complex and dynamic as the fees
+        // start to float.
+        final long MIN_PAYMENT = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.value;
+        if (initiate.getMinPayment() != MIN_PAYMENT) {
+            log.error("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
+            errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
+            errorBuilder.setExpectedValue(MIN_PAYMENT);
+            missing = Coin.valueOf(initiate.getMinPayment() - MIN_PAYMENT);
+            return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
         }
 
         final byte[] pubKeyBytes = initiate.getMultisigKey().toByteArray();
         if (!ECKey.isPubKeyCanonical(pubKeyBytes))
             throw new VerificationException("Server gave us a non-canonical public key, protocol error.");
-        state = new PaymentChannelClientState(wallet, coinSelector, myKey, ECKey.fromPublicOnly(pubKeyBytes), contractValue, expireTime);
+        switch (majorVersion) {
+            case 1:
+                state = new PaymentChannelV1ClientState(wallet, myKey, ECKey.fromPublicOnly(pubKeyBytes), contractValue, expireTime);
+                break;
+            case 2:
+                state = new PaymentChannelV2ClientState(wallet, myKey, ECKey.fromPublicOnly(pubKeyBytes), contractValue, expireTime);
+                break;
+            default:
+                return CloseReason.NO_ACCEPTABLE_VERSION;
+        }
         try {
             state.initiate(userKeySetup);
         } catch (ValueOutOfRangeException e) {
@@ -236,25 +329,62 @@ public class PaymentChannelClient implements IPaymentChannelClient {
             return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
         }
         minPayment = initiate.getMinPayment();
-        step = InitStep.WAITING_FOR_REFUND_RETURN;
+        switch (majorVersion) {
+            case 1:
+                step = InitStep.WAITING_FOR_REFUND_RETURN;
 
-        Protos.ProvideRefund.Builder provideRefundBuilder = Protos.ProvideRefund.newBuilder()
-                .setMultisigKey(ByteString.copyFrom(myKey.getPubKey()))
-                .setTx(ByteString.copyFrom(state.getIncompleteRefundTransaction().bitcoinSerialize()));
+                Protos.ProvideRefund.Builder provideRefundBuilder = Protos.ProvideRefund.newBuilder()
+                        .setMultisigKey(ByteString.copyFrom(myKey.getPubKey()))
+                        .setTx(ByteString.copyFrom(((PaymentChannelV1ClientState)state).getIncompleteRefundTransaction().unsafeBitcoinSerialize()));
 
-        conn.sendToServer(Protos.TwoWayChannelMessage.newBuilder()
-                .setProvideRefund(provideRefundBuilder)
-                .setType(Protos.TwoWayChannelMessage.MessageType.PROVIDE_REFUND)
-                .build());
+                conn.sendToServer(Protos.TwoWayChannelMessage.newBuilder()
+                        .setProvideRefund(provideRefundBuilder)
+                        .setType(Protos.TwoWayChannelMessage.MessageType.PROVIDE_REFUND)
+                        .build());
+                break;
+            case 2:
+                step = InitStep.WAITING_FOR_CHANNEL_OPEN;
+
+                // Before we can send the server the contract (ie send it to the network), we must ensure that our refund
+                // transaction is safely in the wallet - thus we store it (this also keeps it up-to-date when we pay)
+                state.storeChannelInWallet(serverId);
+
+                Protos.ProvideContract.Builder provideContractBuilder = Protos.ProvideContract.newBuilder()
+                        .setTx(ByteString.copyFrom(state.getContract().unsafeBitcoinSerialize()))
+                        .setClientKey(ByteString.copyFrom(myKey.getPubKey()));
+                try {
+                    // Make an initial payment of the dust limit, and put it into the message as well. The size of the
+                    // server-requested dust limit was already sanity checked by this point.
+                    PaymentChannelClientState.IncrementedPayment payment = state().incrementPaymentBy(Coin.valueOf(minPayment), userKeySetup);
+                    Protos.UpdatePayment.Builder initialMsg = provideContractBuilder.getInitialPaymentBuilder();
+                    initialMsg.setSignature(ByteString.copyFrom(payment.signature.encodeToBitcoin()));
+                    initialMsg.setClientChangeValue(state.getValueRefunded().value);
+                } catch (ValueOutOfRangeException e) {
+                    throw new IllegalStateException(e);  // This cannot happen.
+                }
+
+                // Not used any more
+                userKeySetup = null;
+
+                final Protos.TwoWayChannelMessage.Builder msg = Protos.TwoWayChannelMessage.newBuilder();
+                msg.setProvideContract(provideContractBuilder);
+                msg.setType(Protos.TwoWayChannelMessage.MessageType.PROVIDE_CONTRACT);
+                conn.sendToServer(msg.build());
+                break;
+            default:
+                return CloseReason.NO_ACCEPTABLE_VERSION;
+        }
         return null;
     }
 
     @GuardedBy("lock")
     private void receiveRefund(Protos.TwoWayChannelMessage refundMsg, @Nullable KeyParameter userKey) throws VerificationException {
+        checkState(majorVersion == 1);
         checkState(step == InitStep.WAITING_FOR_REFUND_RETURN && refundMsg.hasReturnRefund());
         log.info("Got RETURN_REFUND message, providing signed contract");
         Protos.ReturnRefund returnedRefund = refundMsg.getReturnRefund();
-        state.provideRefundSignature(returnedRefund.getSignature().toByteArray(), userKey);
+        // Cast is safe since we've checked the version number
+        ((PaymentChannelV1ClientState)state).provideRefundSignature(returnedRefund.getSignature().toByteArray(), userKey);
         step = InitStep.WAITING_FOR_CHANNEL_OPEN;
 
         // Before we can send the server the contract (ie send it to the network), we must ensure that our refund
@@ -262,7 +392,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         state.storeChannelInWallet(serverId);
 
         Protos.ProvideContract.Builder contractMsg = Protos.ProvideContract.newBuilder()
-                .setTx(ByteString.copyFrom(state.getMultisigContract().bitcoinSerialize()));
+                .setTx(ByteString.copyFrom(state.getContract().unsafeBitcoinSerialize()));
         try {
             // Make an initial payment of the dust limit, and put it into the message as well. The size of the
             // server-requested dust limit was already sanity checked by this point.
@@ -289,7 +419,16 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         if (step == InitStep.WAITING_FOR_INITIATE) {
             // We skipped the initiate step, because a previous channel that's still valid was resumed.
             wasInitiated  = false;
-            state = new PaymentChannelClientState(storedChannel, wallet);
+            switch (majorVersion) {
+                case 1:
+                    state = new PaymentChannelV1ClientState(storedChannel, wallet);
+                    break;
+                case 2:
+                    state = new PaymentChannelV2ClientState(storedChannel, wallet);
+                    break;
+                default:
+                    throw new IllegalStateException("Invalid version number " + majorVersion);
+            }
         }
         step = InitStep.CHANNEL_OPEN;
         // channelOpen should disable timeouts, but
@@ -314,7 +453,8 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                         checkState(step == InitStep.WAITING_FOR_VERSION_NEGOTIATION && msg.hasServerVersion());
                         // Server might send back a major version lower than our own if they want to fallback to a
                         // lower version. We can't handle that, so we just close the channel.
-                        if (msg.getServerVersion().getMajor() != SERVER_MAJOR_VERSION) {
+                        majorVersion = msg.getServerVersion().getMajor();
+                        if (!versionSelector.isServerVersionAccepted(majorVersion, msg.getServerVersion().getMinor())) {
                             errorBuilder = Protos.Error.newBuilder()
                                     .setCode(Protos.Error.ErrorCode.NO_ACCEPTABLE_VERSION);
                             closeReason = CloseReason.NO_ACCEPTABLE_VERSION;
@@ -434,7 +574,6 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         lock.lock();
         try {
             connectionOpen = false;
-            setIncreasePaymentFutureIfNeeded(CloseReason.CONNECTION_CLOSED, "Connection closed");
             if (state != null)
                 state.disconnectFromChannel();
         } finally {
@@ -487,8 +626,8 @@ public class PaymentChannelClient implements IPaymentChannelClient {
             step = InitStep.WAITING_FOR_VERSION_NEGOTIATION;
 
             Protos.ClientVersion.Builder versionNegotiationBuilder = Protos.ClientVersion.newBuilder()
-                    .setMajor(CLIENT_MAJOR_VERSION)
-                    .setMinor(CLIENT_MINOR_VERSION)
+                    .setMajor(versionSelector.getRequestedMajorVersion())
+                    .setMinor(versionSelector.getRequestedMinorVersion())
                     .setTimeWindowSecs(timeWindow);
 
             if (storedChannel != null) {
@@ -570,7 +709,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
             if (wallet.isEncrypted() && userKey == null)
                 throw new ECKey.KeyIsEncryptedException();
 
-            PaymentChannelClientState.IncrementedPayment payment = state().incrementPaymentBy(size, userKey);
+            PaymentChannelV1ClientState.IncrementedPayment payment = state().incrementPaymentBy(size, userKey);
             Protos.UpdatePayment.Builder updatePaymentBuilder = Protos.UpdatePayment.newBuilder()
                     .setSignature(ByteString.copyFrom(payment.signature.encodeToBitcoin()))
                     .setClientChangeValue(state.getValueRefunded().value);

@@ -84,7 +84,7 @@ public class TransactionTest {
 
     @Test(expected = VerificationException.ExcessiveValue.class)
     public void exceedsMaxMoney2() throws Exception {
-        Coin half = NetworkParameters.MAX_MONEY.divide(2).add(Coin.SATOSHI);
+        Coin half = PARAMS.getMaxMoney().divide(2).add(Coin.SATOSHI);
         tx.getOutput(0).setValue(half);
         tx.addOutput(half, ADDRESS);
         tx.verify();
@@ -109,39 +109,6 @@ public class TransactionTest {
         TransactionInput input = tx.addInput(Sha256Hash.ZERO_HASH, 0xFFFFFFFFL, new ScriptBuilder().data(new byte[99]).build());
         assertEquals(101, input.getScriptBytes().length);
         tx.verify();
-    }
-
-    @Test
-    public void isConsistentReturnsFalseAsExpected() {
-        TransactionBag mockTB = createMock(TransactionBag.class);
-
-        TransactionOutput to = createMock(TransactionOutput.class);
-        EasyMock.expect(to.isAvailableForSpending()).andReturn(true);
-        EasyMock.expect(to.isMineOrWatched(mockTB)).andReturn(true);
-        EasyMock.expect(to.getSpentBy()).andReturn(new TransactionInput(PARAMS, null, new byte[0]));
-
-        Transaction tx = FakeTxBuilder.createFakeTxWithoutChange(PARAMS, to);
-
-        replay(to);
-
-        boolean isConsistent = tx.isConsistent(mockTB, false);
-
-        assertEquals(isConsistent, false);
-    }
-
-    @Test
-    public void isConsistentReturnsFalseAsExpected_WhenAvailableForSpendingEqualsFalse() {
-        TransactionOutput to = createMock(TransactionOutput.class);
-        EasyMock.expect(to.isAvailableForSpending()).andReturn(false);
-        EasyMock.expect(to.getSpentBy()).andReturn(null);
-
-        Transaction tx = FakeTxBuilder.createFakeTxWithoutChange(PARAMS, to);
-
-        replay(to);
-
-        boolean isConsistent = tx.isConsistent(createMock(TransactionBag.class), false);
-
-        assertEquals(isConsistent, false);
     }
 
     @Test
@@ -412,5 +379,29 @@ public class TransactionTest {
 
         tx.getInputs().get(0).setSequenceNumber(TransactionInput.NO_SEQUENCE - 2);
         assertTrue(tx.isOptInFullRBF());
+    }
+
+    /**
+     * Ensure that hashForSignature() doesn't modify a transaction's data, which could wreak multithreading havoc.
+     */
+    @Test
+    public void testHashForSignatureThreadSafety() {
+        Block genesis = UnitTestParams.get().getGenesisBlock();
+        Block block1 = genesis.createNextBlock(new ECKey().toAddress(UnitTestParams.get()),
+                    genesis.getTransactions().get(0).getOutput(0).getOutPointFor());
+
+        final Transaction tx = block1.getTransactions().get(1);
+        final String txHash = tx.getHashAsString();
+        final String txNormalizedHash = tx.hashForSignature(0, new byte[0], Transaction.SigHash.ALL.byteValue()).toString();
+
+        for (int i = 0; i < 100; i++) {
+            // ensure the transaction object itself was not modified; if it was, the hash will change
+            assertEquals(txHash, tx.getHashAsString());
+            new Thread(){
+                public void run() {
+                    assertEquals(txNormalizedHash, tx.hashForSignature(0, new byte[0], Transaction.SigHash.ALL.byteValue()).toString());
+                }
+            };
+        }
     }
 }

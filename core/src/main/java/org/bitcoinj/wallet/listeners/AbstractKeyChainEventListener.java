@@ -1,6 +1,4 @@
-/**
- * Copyright 2013 Google Inc.
- *
+/*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,11 +12,14 @@
  * limitations under the License.
  */
 
-package org.bitcoinj.core.listeners;
+package org.bitcoinj.wallet.listeners;
 
-/**
- * <p>Common interface for wallet changes and transactions. For fine-grain
- * events please use the super-interfaces.</p>
- */
-public interface WalletEventListener extends WalletChangeEventListener, WalletCoinEventListener {
+import org.bitcoinj.core.ECKey;
+
+import java.util.List;
+
+public class AbstractKeyChainEventListener implements KeyChainEventListener {
+    @Override
+    public void onKeysAdded(List<ECKey> keys) {
+    }
 }

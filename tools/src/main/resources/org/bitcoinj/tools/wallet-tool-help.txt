@@ -10,6 +10,9 @@ Usage: wallet-tool --flags action-name
   create               Makes a new wallet in the file specified by --wallet.
                        Will complain and require --force if the wallet already exists.
                        If --seed is present, it should specify either a mnemonic code or hex/base58 raw seed bytes.
+                       If --watchkey is present, it creates a watching wallet using the specified base58 xpub.
+                       If --seed or --watchkey is combined with either --date or --unixtime, use that as a birthdate for
+                       the wallet. See the set-creation-time action for the meaning of these flags.
   marry                Makes the wallet married with other parties, requiring multisig to spend funds.
                        External public keys for other signing parties must be specified with --xpubkeys (comma separated).
   add-key              Adds a new key to the wallet, either specified or freshly generated.
@@ -45,7 +48,7 @@ Usage: wallet-tool --flags action-name
                          --payment-request=http://merchant.com/pay.php?123
 
                        Other options include:
-                          --fee=0.01  sets the tx fee
+                          --fee-per-kb=0.0005 sets the tx fee
                           --locktime=1234  sets the lock time to block 1234
                           --locktime=2013/01/01  sets the lock time to 1st Jan 2013
                           --allow-unconfirmed will let you create spends of pending non-change outputs.
@@ -69,14 +72,14 @@ Usage: wallet-tool --flags action-name
                        Options:
                           --output=pubkey:value sets the amount to lock and the recipient
                           --refund-to=pubkey sets "our" public key
-                          --fee=value sets the mining fee
+                          --fee-per-kb=value sets the network fee
                           --locktime=YYYY/MM/DD sets the expiry time for the channel
   settle-cltvpaymentchannel
                        Creates and broadcasts a transaction settling a previous micropayment channel.
                        This tool, for testing, requires the presence of both private keys.
                        Options:
                           --output=pubkey:value sets the destination for the money
-                          --fee=value sets the mining fee
+                          --fee-per-kb=value sets the network fee
                           --txhash=hash sets the transaction to spend
   refund-cltvpaymentchannel
                        Creates and broadcasts a transaction refunding a previous micropayment channel.
@@ -84,7 +87,7 @@ Usage: wallet-tool --flags action-name
                        the created transaction won't be accepted into the mempool until that point.
                        Options:
                           --output=pubkey:value sets the destination for the money
-                          --fee=value sets the mining fee
+                          --fee-per-kb=value sets the network fee
                           --txhash=hash sets the transaction to spend
 
 >>> GENERAL OPTIONS

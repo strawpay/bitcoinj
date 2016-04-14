@@ -15,13 +15,15 @@
 package org.bitcoinj.tools;
 
 import org.bitcoinj.core.*;
-import org.bitcoinj.core.listeners.PeerConnectionEventListener;
+import org.bitcoinj.core.listeners.PeerConnectedEventListener;
+import org.bitcoinj.core.listeners.PeerDisconnectedEventListener;
 import org.bitcoinj.kits.WalletAppKit;
 import org.bitcoinj.params.MainNetParams;
 import org.bitcoinj.utils.BriefLogFormatter;
+import org.bitcoinj.wallet.SendRequest;
+import org.bitcoinj.wallet.Wallet;
 
 import java.io.File;
-import java.util.Set;
 
 /**
  * A program that sends a transaction with the specified fee and measures how long it takes to confirm.
@@ -73,24 +75,20 @@ public class TestFeeLevel {
             value = value.subtract(outputValue);
         }
         transaction.addOutput(value, kit.wallet().freshReceiveAddress());
-        Wallet.SendRequest request = Wallet.SendRequest.forTx(transaction);
+        SendRequest request = SendRequest.forTx(transaction);
         request.feePerKb = feeToTest;
         request.ensureMinRequiredFee = false;
         kit.wallet().completeTx(request);
-        System.out.println("Size in bytes is " + request.tx.bitcoinSerialize().length);
+        System.out.println("Size in bytes is " + request.tx.unsafeBitcoinSerialize().length);
         System.out.println("TX is " + request.tx);
         System.out.println("Waiting for " + kit.peerGroup().getMaxConnections() + " connected peers");
-        kit.peerGroup().addConnectionEventListener(new PeerConnectionEventListener() {
-
-            @Override
-            public void onPeersDiscovered(Set<PeerAddress> peerAddresses) {
-            }
-
+        kit.peerGroup().addDisconnectedEventListener(new PeerDisconnectedEventListener() {
             @Override
             public void onPeerDisconnected(Peer peer, int peerCount) {
                 System.out.println(peerCount + " peers connected");
             }
-
+        });
+        kit.peerGroup().addConnectedEventListener(new PeerConnectedEventListener() {
             @Override
             public void onPeerConnected(Peer peer, int peerCount) {
                 System.out.println(peerCount + " peers connected");

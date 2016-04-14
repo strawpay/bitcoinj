@@ -18,7 +18,6 @@
 package org.bitcoinj.tools;
 
 import org.bitcoinj.core.*;
-import org.bitcoinj.core.Wallet.BalanceType;
 import org.bitcoinj.crypto.*;
 import org.bitcoinj.net.discovery.DnsDiscovery;
 import org.bitcoinj.params.MainNetParams;
@@ -48,11 +47,19 @@ import joptsimple.OptionSet;
 import joptsimple.OptionSpec;
 import joptsimple.util.DateConverter;
 
-import org.bitcoinj.core.listeners.AbstractPeerDataEventListener;
-import org.bitcoinj.core.listeners.AbstractWalletEventListener;
+import org.bitcoinj.core.listeners.BlocksDownloadedEventListener;
 import org.bitcoinj.core.listeners.DownloadProgressTracker;
 import org.bitcoinj.wallet.MarriedKeyChain;
 import org.bitcoinj.wallet.Protos;
+import org.bitcoinj.wallet.SendRequest;
+import org.bitcoinj.wallet.Wallet;
+import org.bitcoinj.wallet.WalletExtension;
+import org.bitcoinj.wallet.WalletProtobufSerializer;
+import org.bitcoinj.wallet.Wallet.BalanceType;
+import org.bitcoinj.wallet.listeners.WalletChangeEventListener;
+import org.bitcoinj.wallet.listeners.WalletCoinsReceivedEventListener;
+import org.bitcoinj.wallet.listeners.WalletCoinsSentEventListener;
+import org.bitcoinj.wallet.listeners.WalletReorganizeEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
@@ -216,7 +223,7 @@ public class WalletTool {
         xpubkeysFlag = parser.accepts("xpubkeys").withRequiredArg();
         OptionSpec<String> outputFlag = parser.accepts("output").withRequiredArg();
         parser.accepts("value").withRequiredArg();
-        parser.accepts("fee").withRequiredArg();
+        OptionSpec<String> feePerKbOption = parser.accepts("fee-per-kb").withRequiredArg();
         unixtimeFlag = parser.accepts("unixtime").withRequiredArg().ofType(Long.class);
         OptionSpec<String> conditionFlag = parser.accepts("condition").withRequiredArg();
         parser.accepts("locktime").withRequiredArg();
@@ -274,6 +281,8 @@ public class WalletTool {
             default:
                 throw new RuntimeException("Unreachable.");
         }
+        Context.propagate(new Context(params));
+
         mode = modeFlag.value(options);
 
         // Allow the user to override the name of the chain used.
@@ -352,16 +361,15 @@ public class WalletTool {
                     System.err.println("--payment-request and --output cannot be used together.");
                     return;
                 } else if (options.has(outputFlag)) {
-                    Coin fee = Coin.ZERO;
-                    if (options.has("fee")) {
-                        fee = parseCoin((String)options.valueOf("fee"));
-                    }
+                    Coin feePerKb = null;
+                    if (options.has(feePerKbOption))
+                        feePerKb = parseCoin((String) options.valueOf(feePerKbOption));
                     String lockTime = null;
                     if (options.has("locktime")) {
                         lockTime = (String) options.valueOf("locktime");
                     }
                     boolean allowUnconfirmed = options.has("allow-unconfirmed");
-                    send(outputFlag.values(options), fee, lockTime, allowUnconfirmed);
+                    send(outputFlag.values(options), feePerKb, lockTime, allowUnconfirmed);
                 } else if (options.has(paymentRequestLocation)) {
                     sendPaymentRequest(paymentRequestLocation.value(options), !options.has("no-pki"));
                 } else {
@@ -374,10 +382,9 @@ public class WalletTool {
                     System.err.println("You must specify a --output=addr:value");
                     return;
                 }
-                Coin fee = Coin.ZERO;
-                if (options.has("fee")) {
-                    fee = parseCoin((String) options.valueOf("fee"));
-                }
+                Coin feePerKb = null;
+                if (options.has(feePerKbOption))
+                    feePerKb = parseCoin((String) options.valueOf(feePerKbOption));
                 if (!options.has("locktime")) {
                     System.err.println("You must specify a --locktime");
                     return;
@@ -388,39 +395,37 @@ public class WalletTool {
                     System.err.println("You must specify an address to refund money to after expiry: --refund-to=addr");
                     return;
                 }
-                sendCLTVPaymentChannel(refundFlag.value(options), outputFlag.value(options), fee, lockTime, allowUnconfirmed);
+                sendCLTVPaymentChannel(refundFlag.value(options), outputFlag.value(options), feePerKb, lockTime, allowUnconfirmed);
                 } break;
             case SETTLE_CLTVPAYMENTCHANNEL: {
                 if (!options.has(outputFlag)) {
                     System.err.println("You must specify a --output=addr:value");
                     return;
                 }
-                Coin fee = Coin.ZERO;
-                if (options.has("fee")) {
-                    fee = parseCoin((String) options.valueOf("fee"));
-                }
+                Coin feePerKb = null;
+                if (options.has(feePerKbOption))
+                    feePerKb = parseCoin((String) options.valueOf(feePerKbOption));
                 boolean allowUnconfirmed = options.has("allow-unconfirmed");
                 if (!options.has(txHashFlag)) {
                     System.err.println("You must specify the transaction to spend: --txhash=tx-hash");
                     return;
                 }
-                settleCLTVPaymentChannel(txHashFlag.value(options), outputFlag.value(options), fee, allowUnconfirmed);
+                settleCLTVPaymentChannel(txHashFlag.value(options), outputFlag.value(options), feePerKb, allowUnconfirmed);
                 } break;
             case REFUND_CLTVPAYMENTCHANNEL: {
                 if (!options.has(outputFlag)) {
                     System.err.println("You must specify a --output=addr:value");
                     return;
                 }
-                Coin fee = Coin.ZERO;
-                if (options.has("fee")) {
-                    fee = parseCoin((String) options.valueOf("fee"));
-                }
+                Coin feePerKb = null;
+                if (options.has(feePerKbOption))
+                    feePerKb = parseCoin((String) options.valueOf(feePerKbOption));
                 boolean allowUnconfirmed = options.has("allow-unconfirmed");
                 if (!options.has(txHashFlag)) {
                     System.err.println("You must specify the transaction to spend: --txhash=tx-hash");
                     return;
                 }
-                refundCLTVPaymentChannel(txHashFlag.value(options), outputFlag.value(options), fee, allowUnconfirmed);
+                refundCLTVPaymentChannel(txHashFlag.value(options), outputFlag.value(options), feePerKb, allowUnconfirmed);
             } break;
             case ENCRYPT: encrypt(); break;
             case DECRYPT: decrypt(); break;
@@ -564,7 +569,7 @@ public class WalletTool {
         }
     }
 
-    private static void send(List<String> outputs, Coin fee, String lockTimeStr, boolean allowUnconfirmed) throws VerificationException {
+    private static void send(List<String> outputs, Coin feePerKb, String lockTimeStr, boolean allowUnconfirmed) throws VerificationException {
         try {
             // Convert the input strings to outputs.
             Transaction t = new Transaction(params);
@@ -590,12 +595,13 @@ public class WalletTool {
                     return;
                 }
             }
-            Wallet.SendRequest req = Wallet.SendRequest.forTx(t);
+            SendRequest req = SendRequest.forTx(t);
             if (t.getOutputs().size() == 1 && t.getOutput(0).getValue().equals(wallet.getBalance())) {
                 log.info("Emptying out wallet, recipient may get less than what you expect");
                 req.emptyWallet = true;
             }
-            req.fee = fee;
+            if (feePerKb != null)
+                req.feePerKb = feePerKb;
             if (allowUnconfirmed) {
                 wallet.allowSpendingUnconfirmedTransactions();
             }
@@ -682,7 +688,7 @@ public class WalletTool {
         }
     }
 
-    private static void sendCLTVPaymentChannel(String refund, String output, Coin fee, String lockTimeStr, boolean allowUnconfirmed) throws VerificationException {
+    private static void sendCLTVPaymentChannel(String refund, String output, Coin feePerKb, String lockTimeStr, boolean allowUnconfirmed) throws VerificationException {
         try {
             // Convert the input strings to outputs.
             ECKey outputKey, refundKey;
@@ -721,12 +727,13 @@ public class WalletTool {
                 throw new RuntimeException(e);
             }
 
-            Wallet.SendRequest req = Wallet.SendRequest.toCLTVPaymentChannel(params, lockTime, refundKey, outputKey, value);
+            SendRequest req = SendRequest.toCLTVPaymentChannel(params, BigInteger.valueOf(lockTime), refundKey, outputKey, value);
             if (req.tx.getOutputs().size() == 1 && req.tx.getOutput(0).getValue().equals(wallet.getBalance())) {
                 log.info("Emptying out wallet, recipient may get less than what you expect");
                 req.emptyWallet = true;
             }
-            req.fee = fee;
+            if (feePerKb != null)
+                req.feePerKb = feePerKb;
             if (allowUnconfirmed) {
                 wallet.allowSpendingUnconfirmedTransactions();
             }
@@ -768,12 +775,8 @@ public class WalletTool {
 
     /**
      * Settles a CLTV payment channel transaction given that we own both private keys (ie. for testing).
-     * @param txHash
-     * @param output
-     * @param fee
-     * @param allowUnconfirmed
      */
-    private static void settleCLTVPaymentChannel(String txHash, String output, Coin fee, boolean allowUnconfirmed) {
+    private static void settleCLTVPaymentChannel(String txHash, String output, Coin feePerKb, boolean allowUnconfirmed) {
         try {
             OutputSpec outputSpec;
             Coin value;
@@ -794,10 +797,11 @@ public class WalletTool {
                 return;
             }
 
-            Wallet.SendRequest req = outputSpec.isAddress() ?
-                    Wallet.SendRequest.to(outputSpec.addr, value) :
-                    Wallet.SendRequest.to(params, outputSpec.key, value);
-            req.fee = fee;
+            SendRequest req = outputSpec.isAddress() ?
+                    SendRequest.to(outputSpec.addr, value) :
+                    SendRequest.to(params, outputSpec.key, value);
+            if (feePerKb != null)
+                req.feePerKb = feePerKb;
 
             Transaction lockTimeVerify = wallet.getTransaction(Sha256Hash.wrap(txHash));
             if (lockTimeVerify == null) {
@@ -815,7 +819,7 @@ public class WalletTool {
                 return;
             }
 
-            if (!req.fee.add(value).equals(lockTimeVerifyOutput.getValue())) {
+            if (!value.equals(lockTimeVerifyOutput.getValue())) {
                 System.err.println("You must spend all the money in the input transaction");
             }
 
@@ -875,12 +879,8 @@ public class WalletTool {
 
     /**
      * Refunds a CLTV payment channel transaction after the lock time has expired.
-     * @param txHash
-     * @param output
-     * @param fee
-     * @param allowUnconfirmed
      */
-    private static void refundCLTVPaymentChannel(String txHash, String output, Coin fee, boolean allowUnconfirmed) {
+    private static void refundCLTVPaymentChannel(String txHash, String output, Coin feePerKb, boolean allowUnconfirmed) {
         try {
             OutputSpec outputSpec;
             Coin value;
@@ -901,10 +901,11 @@ public class WalletTool {
                 return;
             }
 
-            Wallet.SendRequest req = outputSpec.isAddress() ?
-                    Wallet.SendRequest.to(outputSpec.addr, value) :
-                    Wallet.SendRequest.to(params, outputSpec.key, value);
-            req.fee = fee;
+            SendRequest req = outputSpec.isAddress() ?
+                    SendRequest.to(outputSpec.addr, value) :
+                    SendRequest.to(params, outputSpec.key, value);
+            if (feePerKb != null)
+                req.feePerKb = feePerKb;
 
             Transaction lockTimeVerify = wallet.getTransaction(Sha256Hash.wrap(txHash));
             if (lockTimeVerify == null) {
@@ -924,7 +925,7 @@ public class WalletTool {
 
             req.tx.setLockTime(lockTimeVerifyOutput.getScriptPubKey().getCLTVPaymentChannelExpiry().longValue());
 
-            if (!req.fee.add(value).equals(lockTimeVerifyOutput.getValue())) {
+            if (!value.equals(lockTimeVerifyOutput.getValue())) {
                 System.err.println("You must spend all the money in the input transaction");
             }
 
@@ -1057,7 +1058,7 @@ public class WalletTool {
                 System.out.println("Pki-Verified Name: " + session.pkiVerificationData.displayName);
                 System.out.println("PKI data verified by: " + session.pkiVerificationData.rootAuthorityName);
             }
-            final Wallet.SendRequest req = session.getSendRequest();
+            final SendRequest req = session.getSendRequest();
             if (password != null) {
                 req.aesKey = passwordToKey(true);
                 if (req.aesKey == null)
@@ -1109,31 +1110,26 @@ public class WalletTool {
                 break;
 
             case WALLET_TX:
-                wallet.addEventListener(new AbstractWalletEventListener() {
-                    private void handleTx(Transaction tx) {
-                        System.out.println(tx.getHashAsString());
-                        latch.countDown();  // Wake up main thread.
-                    }
-
+                wallet.addCoinsReceivedEventListener(new WalletCoinsReceivedEventListener() {
                     @Override
                     public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                         // Runs in a peer thread.
-                        super.onCoinsReceived(wallet, tx, prevBalance, newBalance);
-                        handleTx(tx);
+                        System.out.println(tx.getHashAsString());
+                        latch.countDown();  // Wake up main thread.
                     }
-
+                });
+                wallet.addCoinsSentEventListener(new WalletCoinsSentEventListener() {
                     @Override
-                    public void onCoinsSent(Wallet wallet, Transaction tx, Coin prevBalance,
-                                            Coin newBalance) {
+                    public void onCoinsSent(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                         // Runs in a peer thread.
-                        super.onCoinsSent(wallet, tx, prevBalance, newBalance);
-                        handleTx(tx);
+                        System.out.println(tx.getHashAsString());
+                        latch.countDown();  // Wake up main thread.
                     }
                 });
                 break;
 
             case BLOCK:
-                peers.addDataEventListener(new AbstractPeerDataEventListener() {
+                peers.addBlocksDownloadedEventListener(new BlocksDownloadedEventListener() {
                     @Override
                     public void onBlocksDownloaded(Peer peer, Block block, @Nullable FilteredBlock filteredBlock, int blocksLeft) {
                         // Check if we already ran. This can happen if a block being received triggers download of more
@@ -1151,18 +1147,11 @@ public class WalletTool {
                     latch.countDown();
                     break;
                 }
-                wallet.addEventListener(new AbstractWalletEventListener() {
-                    @Override
-                    public synchronized void onChange() {
-                        super.onChange();
-                        saveWallet(walletFile);
-                        Coin balance = wallet.getBalance(Wallet.BalanceType.ESTIMATED);
-                        if (condition.matchBitcoins(balance)) {
-                            System.out.println(balance.toFriendlyString());
-                            latch.countDown();
-                        }
-                    }
-                });
+                final WalletEventListener listener = new WalletEventListener(latch);
+                wallet.addCoinsReceivedEventListener(listener);
+                wallet.addCoinsSentEventListener(listener);
+                wallet.addChangeEventListener(listener);
+                wallet.addReorganizeEventListener(listener);
                 break;
 
         }
@@ -1185,14 +1174,26 @@ public class WalletTool {
     private static void setup() throws BlockStoreException {
         if (store != null) return;  // Already done.
         // Will create a fresh chain if one doesn't exist or there is an issue with this one.
-        if (!chainFileName.exists() && wallet.getTransactions(true).size() > 0) {
+        boolean reset = !chainFileName.exists();
+        if (reset) {
             // No chain, so reset the wallet as we will be downloading from scratch.
-            System.out.println("Chain file is missing so clearing transactions from the wallet.");
+            System.out.println("Chain file is missing so resetting the wallet.");
             reset();
         }
         if (mode == ValidationMode.SPV) {
             store = new SPVBlockStore(params, chainFileName);
             chain = new BlockChain(params, wallet, store);
+            if (reset) {
+                try {
+                    CheckpointManager.checkpoint(params, CheckpointManager.openStream(params), store,
+                            wallet.getEarliestKeyCreationTime());
+                    StoredBlock head = store.getChainHead();
+                    System.out.println("Skipped to checkpoint " + head.getHeight() + " at "
+                            + Utils.dateTimeFormat(head.getHeader().getTimeSeconds() * 1000));
+                } catch (IOException x) {
+                    System.out.println("Could not load checkpoints: " + x.getMessage());
+                }
+            }
         } else if (mode == ValidationMode.FULL) {
             FullPrunedBlockStore s = new H2FullPrunedBlockStore(params, chainFileName.getAbsolutePath(), 5000);
             store = s;
@@ -1256,7 +1257,8 @@ public class WalletTool {
     private static void shutdown() {
         try {
             if (peers == null) return;  // setup() never called so nothing to do.
-            peers.stop();
+            if (peers.isRunning())
+                peers.stop();
             saveWallet(walletFile);
             store.close();
             wallet = null;
@@ -1270,10 +1272,10 @@ public class WalletTool {
             System.err.println("Wallet creation requested but " + walletFile + " already exists, use --force");
             return;
         }
+        long creationTimeSecs = getCreationTimeSeconds();
+        if (creationTimeSecs == 0)
+            creationTimeSecs = MnemonicCode.BIP39_STANDARDISATION_TIME_SECS;
         if (options.has(seedFlag)) {
-            long creationTimeSecs = MnemonicCode.BIP39_STANDARDISATION_TIME_SECS;
-            if (options.has(dateFlag))
-                creationTimeSecs = options.valueOf(dateFlag).getTime() / 1000;
             String seedStr = options.valueOf(seedFlag);
             DeterministicSeed seed;
             // Parse as mnemonic code.
@@ -1297,8 +1299,7 @@ public class WalletTool {
             }
             wallet = Wallet.fromSeed(params, seed);
         } else if (options.has(watchFlag)) {
-            DeterministicKey watchKey = DeterministicKey.deserializeB58(null, options.valueOf(watchFlag), params);
-            wallet = Wallet.fromWatchingKey(params, watchKey);
+            wallet = Wallet.fromWatchingKeyB58(params, options.valueOf(watchFlag), creationTimeSecs);
         } else {
             wallet = new Wallet(params);
         }
@@ -1413,13 +1414,12 @@ public class WalletTool {
     }
 
     private static long getCreationTimeSeconds() {
-        long creationTimeSeconds = 0;
-        if (options.has(unixtimeFlag)) {
-            creationTimeSeconds = unixtimeFlag.value(options);
-        } else if (options.has(dateFlag)) {
-            creationTimeSeconds = dateFlag.value(options).getTime() / 1000;
-        }
-        return creationTimeSeconds;
+        if (options.has(unixtimeFlag))
+            return unixtimeFlag.value(options);
+        else if (options.has(dateFlag))
+            return dateFlag.value(options).getTime() / 1000;
+        else
+            return 0;
     }
 
     private static void deleteKey() {
@@ -1473,5 +1473,43 @@ public class WalletTool {
         else
             System.out.println("Clearing creation time.");
         seed.setCreationTimeSeconds(creationTime);
+    }
+
+    static synchronized void onChange(final CountDownLatch latch) {
+        saveWallet(walletFile);
+        Coin balance = wallet.getBalance(Wallet.BalanceType.ESTIMATED);
+        if (condition.matchBitcoins(balance)) {
+            System.out.println(balance.toFriendlyString());
+            latch.countDown();
+        }
+    }
+
+    private static class WalletEventListener implements WalletChangeEventListener, WalletCoinsReceivedEventListener,
+            WalletCoinsSentEventListener, WalletReorganizeEventListener {
+        private final CountDownLatch latch;
+
+        private  WalletEventListener(final CountDownLatch latch) {
+            this.latch = latch;
+        }
+
+        @Override
+        public void onWalletChanged(Wallet wallet) {
+            onChange(latch);
+        }
+
+        @Override
+        public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
+            onChange(latch);
+        }
+
+        @Override
+        public void onCoinsSent(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
+            onChange(latch);
+        }
+
+        @Override
+        public void onReorganize(Wallet wallet) {
+            onChange(latch);
+        }
     }
 }

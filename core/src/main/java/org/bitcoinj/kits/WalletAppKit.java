@@ -20,11 +20,9 @@ package org.bitcoinj.kits;
 import com.google.common.collect.*;
 import com.google.common.util.concurrent.*;
 import com.subgraph.orchid.*;
-import org.bitcoinj.core.listeners.DownloadProgressTracker;
-import org.bitcoinj.core.listeners.PeerDataEventListener;
+import org.bitcoinj.core.listeners.*;
 import org.bitcoinj.core.*;
 import org.bitcoinj.net.discovery.*;
-import org.bitcoinj.params.*;
 import org.bitcoinj.protocols.channels.*;
 import org.bitcoinj.store.*;
 import org.bitcoinj.wallet.*;
@@ -76,7 +74,7 @@ public class WalletAppKit extends AbstractIdleService {
 
     protected boolean useAutoSave = true;
     protected PeerAddress[] peerAddresses;
-    protected PeerDataEventListener downloadListener;
+    protected DownloadProgressTracker downloadListener;
     protected boolean autoStop = true;
     protected InputStream checkpoints;
     protected boolean blockingStartup = true;
@@ -135,7 +133,7 @@ public class WalletAppKit extends AbstractIdleService {
      * {@link org.bitcoinj.core.DownloadProgressTracker} is a good choice. This has no effect unless setBlockingStartup(false) has been called
      * too, due to some missing implementation code.
      */
-    public WalletAppKit setDownloadListener(PeerDataEventListener listener) {
+    public WalletAppKit setDownloadListener(DownloadProgressTracker listener) {
         this.downloadListener = listener;
         return this;
     }
@@ -159,7 +157,7 @@ public class WalletAppKit extends AbstractIdleService {
 
     /**
      * If true (the default) then the startup of this service won't be considered complete until the network has been
-     * brought up, peer connections established and the block chain synchronised. Therefore {@link #startAndWait()} can
+     * brought up, peer connections established and the block chain synchronised. Therefore {@link #awaitRunning()} can
      * potentially take a very long time. If false, then startup is considered complete once the network activity
      * begins and peer connections/block chain sync will continue in the background.
      */
@@ -341,7 +339,7 @@ public class WalletAppKit extends AbstractIdleService {
                     @Override
                     public void onSuccess(@Nullable Object result) {
                         completeExtensionInitiations(vPeerGroup);
-                        final PeerDataEventListener l = downloadListener == null ? new DownloadProgressTracker() : downloadListener;
+                        final DownloadProgressTracker l = downloadListener == null ? new DownloadProgressTracker() : downloadListener;
                         vPeerGroup.startBlockChainDownload(l);
                     }
 
@@ -378,9 +376,15 @@ public class WalletAppKit extends AbstractIdleService {
             wallet = loadWallet(false);
         }
 
-        if (useAutoSave) wallet.autosaveToFile(vWalletFile, 5, TimeUnit.SECONDS, null);
+        if (useAutoSave) {
+            this.setupAutoSave(wallet);
+        }
 
         return wallet;
+    }
+
+    protected void setupAutoSave(Wallet wallet) {
+        wallet.autosaveToFile(vWalletFile, 5, TimeUnit.SECONDS, null);
     }
 
     private Wallet loadWallet(boolean shouldReplayWallet) throws Exception {

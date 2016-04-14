@@ -40,6 +40,8 @@ import static java.lang.Math.*;
  * match transactions that weren't inserted into it, but it will never fail to match transactions that were. This is
  * a useful privacy feature - if you have spare bandwidth the false positive rate can be increased so the remote peer
  * gets a noisy picture of what transactions are relevant to your wallet.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class BloomFilter extends Message {
     /** The BLOOM_UPDATE_* constants control when the bloom filter is auto-updated by the peer using
@@ -147,7 +149,7 @@ public class BloomFilter extends Message {
      * Serializes this message to the provided stream. If you just want the raw bytes use bitcoinSerialize().
      */
     @Override
-    void bitcoinSerializeToStream(OutputStream stream) throws IOException {
+    protected void bitcoinSerializeToStream(OutputStream stream) throws IOException {
         stream.write(new VarInt(data.length).encode());
         stream.write(data);
         Utils.uint32ToByteStreamLE(hashFuncs, stream);
@@ -330,14 +332,14 @@ public class BloomFilter extends Message {
                 if (contains(chunk.data)) {
                     boolean isSendingToPubKeys = script.isSentToRawPubKey() || script.isSentToMultiSig();
                     if (flag == BloomUpdate.UPDATE_ALL || (flag == BloomUpdate.UPDATE_P2PUBKEY_ONLY && isSendingToPubKeys))
-                        insert(output.getOutPointFor().bitcoinSerialize());
+                        insert(output.getOutPointFor().unsafeBitcoinSerialize());
                     found = true;
                 }
             }
         }
         if (found) return true;
         for (TransactionInput input : tx.getInputs()) {
-            if (contains(input.getOutpoint().bitcoinSerialize())) {
+            if (contains(input.getOutpoint().unsafeBitcoinSerialize())) {
                 return true;
             }
             for (ScriptChunk chunk : input.getScriptSig().getChunks()) {

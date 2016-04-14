@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2012 Matt Corallo
  * Copyright 2015 Andreas Schildbach
  *
@@ -25,6 +25,8 @@ import java.util.*;
 /**
  * <p>A FilteredBlock is used to relay a block with its transactions filtered using a {@link BloomFilter}. It consists
  * of the block header and a {@link PartialMerkleTree} which contains the transactions which matched the filter.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class FilteredBlock extends Message {
     private Block header;

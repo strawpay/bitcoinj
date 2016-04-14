@@ -1,3 +1,17 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package org.bitcoinj.core;
 
 import com.google.common.collect.ImmutableList;
@@ -759,7 +773,7 @@ public class FullBlockTestGenerator {
                     try {
                         ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(73);
                         bos.write(coinbaseOutKey.sign(hash).encodeToDER());
-                        bos.write(SigHash.SINGLE.ordinal() + 1);
+                        bos.write(SigHash.SINGLE.value);
                         byte[] signature = bos.toByteArray();
 
                         ByteArrayOutputStream scriptSigBos = new UnsafeByteArrayOutputStream(signature.length + b39p2shScriptPubKey.length + 3);
@@ -830,7 +844,7 @@ public class FullBlockTestGenerator {
                             ByteArrayOutputStream bos = new UnsafeByteArrayOutputStream(
                                     73);
                             bos.write(coinbaseOutKey.sign(hash).encodeToDER());
-                            bos.write(SigHash.SINGLE.ordinal() + 1);
+                            bos.write(SigHash.SINGLE.value);
                             byte[] signature = bos.toByteArray();
 
                             ByteArrayOutputStream scriptSigBos = new UnsafeByteArrayOutputStream(

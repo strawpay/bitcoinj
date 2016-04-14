@@ -24,9 +24,11 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Represents an "addr" message on the P2P network, which contains broadcast IP addresses of other peers. This is
+ * <p>Represents an "addr" message on the P2P network, which contains broadcast IP addresses of other peers. This is
  * one of the ways peers can find each other without using the DNS or IRC discovery mechanisms. However storing and
- * using addr messages is not presently implemented.
+ * using addr messages is not presently implemented.</p>
+ * 
+ * <p>Instances of this class are not safe for use by multiple threads.</p>
  */
 public class AddressMessage extends Message {
 
@@ -85,11 +87,8 @@ public class AddressMessage extends Message {
         length += addresses.size() * (protocolVersion > 31402 ? PeerAddress.MESSAGE_SIZE : PeerAddress.MESSAGE_SIZE - 4);
     }
 
-    /* (non-Javadoc)
-      * @see Message#bitcoinSerializeToStream(java.io.OutputStream)
-      */
     @Override
-    void bitcoinSerializeToStream(OutputStream stream) throws IOException {
+    protected void bitcoinSerializeToStream(OutputStream stream) throws IOException {
         if (addresses == null)
             return;
         stream.write(new VarInt(addresses.size()).encode());
