@@ -20,6 +20,7 @@ package org.bitcoinj.protocols.channels;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
 import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -56,6 +57,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(PaymentChannelClient.class);
 
     protected final ReentrantLock lock = Threading.lock("channelclient");
+    protected final ContractEditor contractEditor;
 
     // Used to track the negotiated version number
     @GuardedBy("lock") private int majorVersion;
@@ -196,7 +198,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      */
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId,
                                 ClientConnection conn, VersionSelector versionSelector) {
-      this(wallet,myKey,maxValue,serverId, DEFAULT_TIME_WINDOW, null, conn, versionSelector);
+      this(wallet,myKey,maxValue,serverId, DEFAULT_TIME_WINDOW, null, null, conn, versionSelector);
     }
 
     /**
@@ -221,7 +223,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      */
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
                                 @Nullable KeyParameter userKeySetup, ClientConnection conn) {
-        this(wallet, myKey, maxValue, serverId, timeWindow, userKeySetup, conn, VersionSelector.VERSION_2_ALLOW_1);
+        this(wallet, myKey, maxValue, serverId, timeWindow, userKeySetup, null, conn, VersionSelector.VERSION_2_ALLOW_1);
     }
 
     /**
@@ -241,6 +243,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *                   a proposal to the server. The server may in turn propose something different.
      *                   See {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#acceptExpireTime(long)}
      * @param userKeySetup Key derived from a user password, used to decrypt myKey, if it is encrypted, during setup.
+     * @param contractEditor Editor for the contract's {@link SendRequest}
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      * @param versionSelector An enum indicating which versions to support:
@@ -249,7 +252,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *                        VERSION_2: suggest version 2 and enforce use of version 2
      */
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
-                                @Nullable KeyParameter userKeySetup, ClientConnection conn, VersionSelector versionSelector) {
+                                @Nullable KeyParameter userKeySetup, @Nullable ContractEditor contractEditor, ClientConnection conn, VersionSelector versionSelector) {
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(myKey);
         this.maxValue = checkNotNull(maxValue);
@@ -258,6 +261,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         this.timeWindow = timeWindow;
         this.conn = checkNotNull(conn);
         this.userKeySetup = userKeySetup;
+        this.contractEditor = contractEditor;
         this.versionSelector = versionSelector;
     }
 
@@ -322,7 +326,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                 return CloseReason.NO_ACCEPTABLE_VERSION;
         }
         try {
-            state.initiate(userKeySetup);
+            state.initiate(userKeySetup, contractEditor);
         } catch (ValueOutOfRangeException e) {
             log.error("Value out of range when trying to initiate", e);
             errorBuilder.setCode(Protos.Error.ErrorCode.CHANNEL_VALUE_TOO_LARGE);

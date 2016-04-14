@@ -817,25 +817,20 @@ public class PaymentChannelStateTest extends TestWithWallet {
 
         switch (versionSelector) {
             case VERSION_1:
-                clientState = new PaymentChannelV1ClientState(wallet, myKey, ECKey.fromPublicOnly(serverKey.getPubKey()), CENT, EXPIRE_TIME) {
-                    @Override
-                    protected void editContractSendRequest(SendRequest req) {
-                        req.coinSelector = wallet.getCoinSelector();
-                    }
-                };
+                clientState = new PaymentChannelV1ClientState(wallet, myKey, ECKey.fromPublicOnly(serverKey.getPubKey()), CENT, EXPIRE_TIME) ;
                 break;
             case VERSION_2_ALLOW_1:
             case VERSION_2:
-                clientState = new PaymentChannelV2ClientState(wallet, myKey, ECKey.fromPublicOnly(serverKey.getPubKey()), CENT, EXPIRE_TIME) {
-                    @Override
-                    protected void editContractSendRequest(SendRequest req) {
-                        req.coinSelector = wallet.getCoinSelector();
-                    }
-                };
+                clientState = new PaymentChannelV2ClientState(wallet, myKey, ECKey.fromPublicOnly(serverKey.getPubKey()), CENT, EXPIRE_TIME);
                 break;
         }
         assertEquals(PaymentChannelClientState.State.NEW, clientState.getState());
-        clientState.initiate();
+        clientState.initiate(null, new IPaymentChannelClient.ContractEditor() {
+            @Override
+            public void update(SendRequest sendRequest) {
+                sendRequest.coinSelector = wallet.getCoinSelector();
+            }
+        });
         assertEquals(getInitialClientState(), clientState.getState());
 
         if (useRefunds()) {

@@ -23,6 +23,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 
 import com.google.protobuf.ByteString;
 import org.bitcoin.paymentchannel.Protos;
+import org.bitcoinj.wallet.SendRequest;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
@@ -145,6 +146,13 @@ public interface IPaymentChannelClient {
          * @param wasInitiated If true, the channel is newly opened. If false, it was resumed.
          */
         void channelOpen(boolean wasInitiated);
+    }
+
+    /**
+     * Edit the {@link SendRequest} of the contract.
+     */
+    interface ContractEditor {
+        void update(SendRequest sendRequest);
     }
 
     /**
