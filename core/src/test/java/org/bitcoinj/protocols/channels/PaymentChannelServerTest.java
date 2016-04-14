@@ -15,6 +15,7 @@
 package org.bitcoinj.protocols.channels;
 
 import org.bitcoinj.core.Coin;
+import org.bitcoinj.core.Transaction;
 import org.bitcoinj.core.TransactionBroadcaster;
 import org.bitcoinj.core.Utils;
 import org.bitcoinj.wallet.Wallet;
@@ -90,7 +91,7 @@ public class PaymentChannelServerTest {
         connection.sendToClient(capture(initiateCapture));
 
         replay(connection);
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, minTimeWindow, 40000, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, minTimeWindow, 40000, connection);
 
         dut.connectionOpen();
         dut.receiveMessage(message);
@@ -109,7 +110,7 @@ public class PaymentChannelServerTest {
         connection.sendToClient(capture(initiateCapture));
         replay(connection);
 
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, 20000, maxTimeWindow, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, 20000, maxTimeWindow, connection);
 
         dut.connectionOpen();
         dut.receiveMessage(message);
@@ -121,12 +122,12 @@ public class PaymentChannelServerTest {
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowTimeWindowLessThan2h() {
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, 7199, 40000, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, 7199, 40000, connection);
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowNegativeTimeWindow() {
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, 40001, 40000, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, 40001, 40000, connection);
     }
 
     @Test
@@ -137,7 +138,7 @@ public class PaymentChannelServerTest {
         replay(connection);
         final int expire = 24 * 60 * 60 - 60;  // This the default defined in paymentchannel.proto
 
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, expire, expire, connection);
+        dut = new PaymentChannelServer(broadcaster, wallet, Transaction.DEFAULT_TX_FEE, Coin.CENT, expire, expire, connection);
         dut.connectionOpen();
         long expectedExpire = Utils.currentTimeSeconds() + expire;
         dut.receiveMessage(message);
