@@ -219,7 +219,7 @@ public abstract class PaymentChannelClientState {
      * @throws InsufficientMoneyException if the wallet doesn't contain enough balance to initiate
      */
     public void initiate() throws ValueOutOfRangeException, InsufficientMoneyException {
-        initiate(null, null);
+        initiate(null, PaymentChannelClient.defaultChannelModifier);
     }
 
     /**

@@ -262,7 +262,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         this.conn = checkNotNull(conn);
         this.userKeySetup = userKeySetup;
         if (channelModifier == null) {
-            this.channelModifier = new DefaultChannelModifier();
+            this.channelModifier = defaultChannelModifier;
         } else {
             this.channelModifier = channelModifier;
         }
@@ -776,4 +776,6 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         }
 
     }
+
+    public static DefaultChannelModifier defaultChannelModifier = new DefaultChannelModifier();
 }
