@@ -23,6 +23,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 
 import com.google.protobuf.ByteString;
 import org.bitcoin.paymentchannel.Protos;
+import org.bitcoinj.wallet.SendRequest;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
@@ -145,6 +146,24 @@ public interface IPaymentChannelClient {
          * @param wasInitiated If true, the channel is newly opened. If false, it was resumed.
          */
         void channelOpen(boolean wasInitiated);
+    }
+
+    /**
+     * Modify the Channel configuration.
+     */
+    interface ChannelModifier {
+        /**
+         * Modify the sendRequest used for the contract.
+         * @param sendRequest
+         * @return the modified sendRequest.
+         */
+        SendRequest modifySendRequest(SendRequest sendRequest);
+
+        /**
+         *  The maximum acceptable min payment. If the server suggests a higher amount
+         *  the channel creation will be aborted.
+         */
+        Coin acceptableMinPayment();
     }
 
     /**

@@ -88,7 +88,7 @@ public class PaymentChannelClientTest {
         long timeWindow = 4000;
         KeyParameter userKey = null;
         PaymentChannelClient dut =
-                new PaymentChannelClient(wallet, ecKey, maxValue, serverHash, timeWindow, userKey, connection, versionSelector);
+                new PaymentChannelClient(wallet, ecKey, maxValue, serverHash, timeWindow, userKey, null, connection, versionSelector);
         connection.sendToServer(capture(clientVersionCapture));
         EasyMock.expect(wallet.getExtensions()).andReturn(new HashMap<String, WalletExtension>());
         replay(connection, wallet);

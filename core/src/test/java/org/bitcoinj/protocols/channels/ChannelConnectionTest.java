@@ -197,7 +197,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         server.bindAndStart(4243);
 
         PaymentChannelClientConnection client = new PaymentChannelClientConnection(
-                new InetSocketAddress("localhost", 4243), 30, wallet, myKey, COIN, "", PaymentChannelClient.DEFAULT_TIME_WINDOW, userKeySetup, versionSelector);
+                new InetSocketAddress("localhost", 4243), 30, wallet, myKey, COIN, "", PaymentChannelClient.DEFAULT_TIME_WINDOW, userKeySetup, null, versionSelector);
 
         // Wait for the multi-sig tx to be transmitted.
         broadcastTxPause.release();
