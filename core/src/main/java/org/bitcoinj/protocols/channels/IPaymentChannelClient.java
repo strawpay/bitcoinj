@@ -149,10 +149,21 @@ public interface IPaymentChannelClient {
     }
 
     /**
-     * Edit the {@link SendRequest} of the contract.
+     * Modify the Channel configuration.
      */
-    interface ContractEditor {
-        void update(SendRequest sendRequest);
+    interface ChannelModifier {
+        /**
+         * Modify the sendRequest used for the contract.
+         * @param sendRequest
+         * @return the modified sendRequest.
+         */
+        SendRequest modifySendRequest(SendRequest sendRequest);
+
+        /**
+         *  The maximum acceptable min payment. If the server suggests a higher amount
+         *  the channel creation will be aborted.
+         */
+        Coin acceptableMinPayment();
     }
 
     /**

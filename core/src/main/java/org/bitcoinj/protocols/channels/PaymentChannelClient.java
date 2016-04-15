@@ -57,7 +57,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(PaymentChannelClient.class);
 
     protected final ReentrantLock lock = Threading.lock("channelclient");
-    protected final ContractEditor contractEditor;
+    protected final ChannelModifier channelModifier;
 
     // Used to track the negotiated version number
     @GuardedBy("lock") private int majorVersion;
@@ -243,7 +243,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *                   a proposal to the server. The server may in turn propose something different.
      *                   See {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#acceptExpireTime(long)}
      * @param userKeySetup Key derived from a user password, used to decrypt myKey, if it is encrypted, during setup.
-     * @param contractEditor Editor for the contract's {@link SendRequest}
+     * @param channelModifier Modify the channel's configuration. You may extend {@link DefaultChannelModifier}
      * @param conn A callback listener which represents the connection to the server (forwards messages we generate to
      *             the server)
      * @param versionSelector An enum indicating which versions to support:
@@ -252,7 +252,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
      *                        VERSION_2: suggest version 2 and enforce use of version 2
      */
     public PaymentChannelClient(Wallet wallet, ECKey myKey, Coin maxValue, Sha256Hash serverId, long timeWindow,
-                                @Nullable KeyParameter userKeySetup, @Nullable ContractEditor contractEditor, ClientConnection conn, VersionSelector versionSelector) {
+                                @Nullable KeyParameter userKeySetup, @Nullable ChannelModifier channelModifier, ClientConnection conn, VersionSelector versionSelector) {
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(myKey);
         this.maxValue = checkNotNull(maxValue);
@@ -261,7 +261,11 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         this.timeWindow = timeWindow;
         this.conn = checkNotNull(conn);
         this.userKeySetup = userKeySetup;
-        this.contractEditor = contractEditor;
+        if (channelModifier == null) {
+            this.channelModifier = new DefaultChannelModifier();
+        } else {
+            this.channelModifier = channelModifier;
+        }
         this.versionSelector = versionSelector;
     }
 
@@ -303,12 +307,12 @@ public class PaymentChannelClient implements IPaymentChannelClient {
 
         // For now we require a hard-coded value. In future this will have to get more complex and dynamic as the fees
         // start to float.
-        final long MIN_PAYMENT = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE.value;
-        if (initiate.getMinPayment() != MIN_PAYMENT) {
-            log.error("Server requested a min payment of {} but we expected {}", initiate.getMinPayment(), MIN_PAYMENT);
+        final long maxMin = channelModifier.acceptableMinPayment().value;
+        if (initiate.getMinPayment() > maxMin) {
+            log.error("Server requested a min payment of {} but we only accept up to {}", initiate.getMinPayment(), maxMin);
             errorBuilder.setCode(Protos.Error.ErrorCode.MIN_PAYMENT_TOO_LARGE);
-            errorBuilder.setExpectedValue(MIN_PAYMENT);
-            missing = Coin.valueOf(initiate.getMinPayment() - MIN_PAYMENT);
+            errorBuilder.setExpectedValue(maxMin);
+            missing = Coin.valueOf(initiate.getMinPayment() - maxMin);
             return CloseReason.SERVER_REQUESTED_TOO_MUCH_VALUE;
         }
 
@@ -326,7 +330,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                 return CloseReason.NO_ACCEPTABLE_VERSION;
         }
         try {
-            state.initiate(userKeySetup, contractEditor);
+            state.initiate(userKeySetup, channelModifier);
         } catch (ValueOutOfRangeException e) {
             log.error("Value out of range when trying to initiate", e);
             errorBuilder.setCode(Protos.Error.ErrorCode.CHANNEL_VALUE_TOO_LARGE);
@@ -757,5 +761,19 @@ public class PaymentChannelClient implements IPaymentChannelClient {
 
         // Ensure the future runs without the client lock held.
         future.set(new PaymentIncrementAck(value, paymentAck.getInfo()));
+    }
+
+    public static class DefaultChannelModifier implements ChannelModifier {
+
+        @Override
+        public SendRequest modifySendRequest(SendRequest sendRequest) {
+            return sendRequest;
+        }
+
+        @Override
+        public Coin acceptableMinPayment() {
+            return Transaction.REFERENCE_DEFAULT_MIN_TX_FEE;
+        }
+
     }
 }
