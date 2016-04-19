@@ -151,10 +151,10 @@ public interface IPaymentChannelClient {
     /**
      * Modify the Channel configuration.
      */
-    interface ChannelModifier {
+    interface ClientChannelModifier {
         /**
          * Modify the sendRequest used for the contract.
-         * @param sendRequest
+         * @param sendRequest the current sendRequest.
          * @return the modified sendRequest.
          */
         SendRequest modifySendRequest(SendRequest sendRequest);
