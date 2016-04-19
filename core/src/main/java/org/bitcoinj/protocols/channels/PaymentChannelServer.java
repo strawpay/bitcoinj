@@ -21,6 +21,7 @@ import com.google.common.util.concurrent.AsyncFunction;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
 import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 
 import com.google.common.util.concurrent.FutureCallback;
@@ -129,6 +130,25 @@ public class PaymentChannelServer {
     }
     private final ServerConnection conn;
 
+    public interface ServerChannelModifier {
+        /**
+         * The size of the payment that the client is requested to pay in the initiate phase.
+         */
+        Coin getMinPayment();
+
+        /**
+         * The maximum allowed channel time window in seconds.
+         * Note that the server need to be online for the whole time the channel is open.
+         * Failure to do this could cause loss of all payments received on the channel.
+         */
+        long getMaxTimeWindow();
+
+        /**
+         * The minimum allowed channel time window in seconds, must be larger than 7200.
+         */
+        long getMinTimeWindow();
+    }
+
     // Used to track the negotiated version number
     @GuardedBy("lock") private int majorVersion;
 
@@ -146,7 +166,7 @@ public class PaymentChannelServer {
 
     // The fee server charges for managing (and settling the channel).
     // This is will be requested in the setup via the min_payment field in the initiate message.
-    private final Coin channelFee;
+    private final Coin minPayment;
 
     // The minimum accepted channel value
     private final Coin minAcceptedChannelSize;
@@ -191,8 +211,7 @@ public class PaymentChannelServer {
      */
     public PaymentChannelServer(TransactionBroadcaster broadcaster, Wallet wallet,
                                 Coin minAcceptedChannelSize, ServerConnection conn) {
-        this(broadcaster, wallet, Transaction.REFERENCE_DEFAULT_MIN_TX_FEE,
-                minAcceptedChannelSize, DEFAULT_MIN_TIME_WINDOW, DEFAULT_MAX_TIME_WINDOW, conn);
+        this(broadcaster, wallet, minAcceptedChannelSize, defaultServerChannelModifier, conn);
     }
 
     /**
@@ -201,30 +220,26 @@ public class PaymentChannelServer {
      * @param broadcaster The PeerGroup on which transactions will be broadcast - should have multiple connections.
      * @param wallet The wallet which will be used to complete transactions.
      *               Unlike {@link PaymentChannelClient}, this does not have to already contain a StoredState manager
-     * @param channelFee The fee amount per channel that the client has to pay in the initiate phase.
      * @param minAcceptedChannelSize The minimum value the client must lock into this channel. A value too large will be
      *                               rejected by clients, and a value too low will require excessive channel reopening
      *                               and may cause fees to be require to settle the channel. A reasonable value depends
      *                               entirely on the expected maximum for the channel, and should likely be somewhere
      *                               between a few bitcents and a bitcoin.
-     * @param minTimeWindow The minimum allowed channel time window in seconds, must be larger than 7200.
-     * @param maxTimeWindow The maximum allowed channel time window in seconds. Note that the server need to be online for the whole time the channel is open.
-     *                              Failure to do this could cause loss of all payments received on the channel.
+     * @param serverChannelModifier Modify the channel defaults. You may extend {@link DefaultServerChannelModifier}
      * @param conn A callback listener which represents the connection to the client (forwards messages we generate to
      *              the client and will close the connection on request)
      */
     public PaymentChannelServer(TransactionBroadcaster broadcaster, Wallet wallet,
-                                Coin channelFee, Coin minAcceptedChannelSize, long minTimeWindow,
-                                long maxTimeWindow, ServerConnection conn) {
+                                Coin minAcceptedChannelSize, ServerChannelModifier serverChannelModifier, ServerConnection conn) {
+        minTimeWindow = serverChannelModifier.getMinTimeWindow();
+        maxTimeWindow = serverChannelModifier.getMaxTimeWindow();
         if (minTimeWindow > maxTimeWindow) throw new IllegalArgumentException("minTimeWindow must be less or equal to maxTimeWindow");
         if (minTimeWindow < HARD_MIN_TIME_WINDOW) throw new IllegalArgumentException("minTimeWindow must be larger than" + HARD_MIN_TIME_WINDOW  + " seconds");
         this.broadcaster = checkNotNull(broadcaster);
         this.wallet = checkNotNull(wallet);
-        this.channelFee = checkNotNull(channelFee);
+        this.minPayment = checkNotNull(serverChannelModifier.getMinPayment());
         this.minAcceptedChannelSize = checkNotNull(minAcceptedChannelSize);
         this.conn = checkNotNull(conn);
-        this.minTimeWindow = minTimeWindow;
-        this.maxTimeWindow = maxTimeWindow;
     }
 
     /**
@@ -307,7 +322,7 @@ public class PaymentChannelServer {
                 .setMultisigKey(ByteString.copyFrom(myKey.getPubKey()))
                 .setExpireTimeSecs(expireTime)
                 .setMinAcceptedChannelSize(minAcceptedChannelSize.value)
-                .setMinPayment(channelFee.value);
+                .setMinPayment(minPayment.value);
 
         conn.sendToClient(Protos.TwoWayChannelMessage.newBuilder()
                 .setInitiate(initiateBuilder)
@@ -642,4 +657,28 @@ public class PaymentChannelServer {
             lock.unlock();
         }
     }
+
+    /**
+     * Extend this class and override the values you want to change.
+     */
+    public static class DefaultServerChannelModifier implements ServerChannelModifier {
+
+        @Override
+        public Coin getMinPayment() {
+            return Transaction.REFERENCE_DEFAULT_MIN_TX_FEE;
+        }
+
+        @Override
+        public long getMaxTimeWindow() {
+            return DEFAULT_MAX_TIME_WINDOW;
+        }
+
+        @Override
+        public long getMinTimeWindow() {
+            return DEFAULT_MIN_TIME_WINDOW;
+        }
+
+    }
+
+    private static  DefaultServerChannelModifier defaultServerChannelModifier = new DefaultServerChannelModifier();
 }
