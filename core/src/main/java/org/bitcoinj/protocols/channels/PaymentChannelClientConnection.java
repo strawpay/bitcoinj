@@ -23,8 +23,7 @@ import org.bitcoinj.core.Sha256Hash;
 import org.bitcoinj.core.Utils;
 import org.bitcoinj.net.NioClient;
 import org.bitcoinj.net.ProtobufConnection;
-import org.bitcoinj.protocols.channels.IPaymentChannelClient.ChannelModifier;
-import org.bitcoinj.wallet.SendRequest;
+import org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientChannelModifier;
 import org.bitcoinj.wallet.Wallet;
 
 import com.google.common.util.concurrent.ListenableFuture;
@@ -153,7 +152,7 @@ public class PaymentChannelClientConnection {
      *                 which were created by others.
      * @param timeWindow The time in seconds, relative to now, on how long this channel should be kept open.
      * @param userKeySetup Key derived from a user password, used to decrypt myKey, if it is encrypted, during setup.
-     * @param channelModifier Modifier to change the channel's configuration.
+     * @param clientChannelModifier Modifier to change the channel's configuration.
      * @param versionSelector An enum indicating which versions to support:
      *                        VERSION_1: use only version 1 of the protocol
      *                        VERSION_2_ALLOW_1: suggest version 2 but allow downgrade to version 1
@@ -164,13 +163,13 @@ public class PaymentChannelClientConnection {
      */
     public PaymentChannelClientConnection(InetSocketAddress server, int timeoutSeconds, Wallet wallet, ECKey myKey,
                                           Coin maxValue, String serverId, final long timeWindow,
-                                          @Nullable KeyParameter userKeySetup, @Nullable ChannelModifier channelModifier,
+                                          @Nullable KeyParameter userKeySetup, @Nullable ClientChannelModifier clientChannelModifier,
                                           PaymentChannelClient.VersionSelector versionSelector)
             throws IOException, ValueOutOfRangeException {
         // Glue the object which vends/ingests protobuf messages in order to manage state to the network object which
         // reads/writes them to the wire in length prefixed form.
         channelClient = new PaymentChannelClient(wallet, myKey, maxValue, Sha256Hash.of(serverId.getBytes()), timeWindow,
-                userKeySetup, channelModifier, new PaymentChannelClient.ClientConnection() {
+                userKeySetup, clientChannelModifier, new PaymentChannelClient.ClientConnection() {
             @Override
             public void sendToServer(Protos.TwoWayChannelMessage msg) {
                 wireParser.write(msg);
