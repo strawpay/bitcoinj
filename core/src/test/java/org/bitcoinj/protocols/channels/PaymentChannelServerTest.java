@@ -15,7 +15,6 @@
 package org.bitcoinj.protocols.channels;
 
 import org.bitcoinj.core.Coin;
-import org.bitcoinj.core.Transaction;
 import org.bitcoinj.core.TransactionBroadcaster;
 import org.bitcoinj.core.Utils;
 import org.bitcoinj.wallet.Wallet;
@@ -91,7 +90,7 @@ public class PaymentChannelServerTest {
         connection.sendToClient(capture(initiateCapture));
 
         replay(connection);
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelModifier() {
+        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelProperties() {
             @Override
             public long getMinTimeWindow() {
                 return minTimeWindow;
@@ -119,7 +118,7 @@ public class PaymentChannelServerTest {
         connection.sendToClient(capture(initiateCapture));
         replay(connection);
 
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelModifier(){
+        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelProperties(){
             @Override
             public long getMaxTimeWindow() {
                 return maxTimeWindow;
@@ -138,7 +137,7 @@ public class PaymentChannelServerTest {
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowTimeWindowLessThan2h() {
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelModifier(){
+        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelProperties(){
             @Override
             public long getMaxTimeWindow() { return 40000; }
             @Override
@@ -150,7 +149,7 @@ public class PaymentChannelServerTest {
 
     @Test(expected = IllegalArgumentException.class)
     public void shouldNotAllowNegativeTimeWindow() {
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelModifier(){
+        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelProperties(){
             @Override
             public long getMaxTimeWindow() { return 40000; }
             @Override
@@ -166,7 +165,7 @@ public class PaymentChannelServerTest {
         replay(connection);
         final int expire = 24 * 60 * 60 - 60;  // This the default defined in paymentchannel.proto
 
-        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelModifier(){
+        dut = new PaymentChannelServer(broadcaster, wallet, Coin.CENT, new PaymentChannelServer.DefaultServerChannelProperties(){
             @Override
             public long getMaxTimeWindow() { return expire; }
             @Override

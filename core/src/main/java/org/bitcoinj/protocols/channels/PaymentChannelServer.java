@@ -21,7 +21,6 @@ import com.google.common.util.concurrent.AsyncFunction;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
 import org.bitcoinj.utils.Threading;
-import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 
 import com.google.common.util.concurrent.FutureCallback;
@@ -130,7 +129,7 @@ public class PaymentChannelServer {
     }
     private final ServerConnection conn;
 
-    public interface ServerChannelModifier {
+    public interface ServerChannelProperties {
         /**
          * The size of the payment that the client is requested to pay in the initiate phase.
          */
@@ -211,7 +210,7 @@ public class PaymentChannelServer {
      */
     public PaymentChannelServer(TransactionBroadcaster broadcaster, Wallet wallet,
                                 Coin minAcceptedChannelSize, ServerConnection conn) {
-        this(broadcaster, wallet, minAcceptedChannelSize, defaultServerChannelModifier, conn);
+        this(broadcaster, wallet, minAcceptedChannelSize, new DefaultServerChannelProperties(), conn);
     }
 
     /**
@@ -225,19 +224,19 @@ public class PaymentChannelServer {
      *                               and may cause fees to be require to settle the channel. A reasonable value depends
      *                               entirely on the expected maximum for the channel, and should likely be somewhere
      *                               between a few bitcents and a bitcoin.
-     * @param serverChannelModifier Modify the channel defaults. You may extend {@link DefaultServerChannelModifier}
+     * @param serverChannelProperties Modify the channel's properties. You may extend {@link DefaultServerChannelProperties}
      * @param conn A callback listener which represents the connection to the client (forwards messages we generate to
      *              the client and will close the connection on request)
      */
     public PaymentChannelServer(TransactionBroadcaster broadcaster, Wallet wallet,
-                                Coin minAcceptedChannelSize, ServerChannelModifier serverChannelModifier, ServerConnection conn) {
-        minTimeWindow = serverChannelModifier.getMinTimeWindow();
-        maxTimeWindow = serverChannelModifier.getMaxTimeWindow();
+                                Coin minAcceptedChannelSize, ServerChannelProperties serverChannelProperties, ServerConnection conn) {
+        minTimeWindow = serverChannelProperties.getMinTimeWindow();
+        maxTimeWindow = serverChannelProperties.getMaxTimeWindow();
         if (minTimeWindow > maxTimeWindow) throw new IllegalArgumentException("minTimeWindow must be less or equal to maxTimeWindow");
         if (minTimeWindow < HARD_MIN_TIME_WINDOW) throw new IllegalArgumentException("minTimeWindow must be larger than" + HARD_MIN_TIME_WINDOW  + " seconds");
         this.broadcaster = checkNotNull(broadcaster);
         this.wallet = checkNotNull(wallet);
-        this.minPayment = checkNotNull(serverChannelModifier.getMinPayment());
+        this.minPayment = checkNotNull(serverChannelProperties.getMinPayment());
         this.minAcceptedChannelSize = checkNotNull(minAcceptedChannelSize);
         this.conn = checkNotNull(conn);
     }
@@ -661,7 +660,7 @@ public class PaymentChannelServer {
     /**
      * Extend this class and override the values you want to change.
      */
-    public static class DefaultServerChannelModifier implements ServerChannelModifier {
+    public static class DefaultServerChannelProperties implements ServerChannelProperties {
 
         @Override
         public Coin getMinPayment() {
@@ -680,5 +679,4 @@ public class PaymentChannelServer {
 
     }
 
-    private static  DefaultServerChannelModifier defaultServerChannelModifier = new DefaultServerChannelModifier();
 }

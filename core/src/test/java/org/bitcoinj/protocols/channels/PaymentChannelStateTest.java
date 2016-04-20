@@ -825,9 +825,9 @@ public class PaymentChannelStateTest extends TestWithWallet {
                 break;
         }
         assertEquals(PaymentChannelClientState.State.NEW, clientState.getState());
-        clientState.initiate(null, new PaymentChannelClient.DefaultClientChannelModifier() {
+        clientState.initiate(null, new PaymentChannelClient.DefaultClientChannelProperties() {
             @Override
-            public SendRequest modifySendRequest(SendRequest sendRequest) {
+            public SendRequest modifyContractSendRequest(SendRequest sendRequest) {
                 sendRequest.coinSelector = wallet.getCoinSelector();
                 return sendRequest;
             }

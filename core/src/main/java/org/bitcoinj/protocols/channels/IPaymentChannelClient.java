@@ -149,21 +149,38 @@ public interface IPaymentChannelClient {
     }
 
     /**
-     * Modify the Channel configuration.
+     * Set Client payment channel properties.
      */
-    interface ClientChannelModifier {
+    interface ClientChannelProperties {
         /**
          * Modify the sendRequest used for the contract.
          * @param sendRequest the current sendRequest.
          * @return the modified sendRequest.
          */
-        SendRequest modifySendRequest(SendRequest sendRequest);
+        SendRequest modifyContractSendRequest(SendRequest sendRequest);
 
         /**
          *  The maximum acceptable min payment. If the server suggests a higher amount
          *  the channel creation will be aborted.
          */
         Coin acceptableMinPayment();
+
+        /**
+         *  The time in seconds, relative to now, on how long this channel should be kept open. Note that is is
+         *  a proposal to the server. The server may in turn propose something different.
+         *  See {@link org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientConnection#acceptExpireTime(long)}
+         *
+         */
+        long timeWindow();
+
+        /**
+         * An enum indicating which versions to support:
+         * VERSION_1: use only version 1 of the protocol
+         * VERSION_2_ALLOW_1: suggest version 2 but allow downgrade to version 1
+         * VERSION_2: suggest version 2 and enforce use of version 2
+         *
+         */
+        PaymentChannelClient.VersionSelector versionSelector();
     }
 
     /**

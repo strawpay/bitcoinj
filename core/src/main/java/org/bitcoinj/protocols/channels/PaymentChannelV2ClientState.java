@@ -21,7 +21,7 @@ import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
 import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.TransactionSignature;
-import org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientChannelModifier;
+import org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientChannelProperties;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.wallet.AllowUnconfirmedCoinSelector;
@@ -100,7 +100,7 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
     }
 
     @Override
-    public synchronized void initiate(@Nullable KeyParameter userKey, ClientChannelModifier clientChannelModifier) throws ValueOutOfRangeException, InsufficientMoneyException {
+    public synchronized void initiate(@Nullable KeyParameter userKey, ClientChannelProperties clientChannelProperties) throws ValueOutOfRangeException, InsufficientMoneyException {
         final NetworkParameters params = wallet.getParams();
         Transaction template = new Transaction(params);
         // There is also probably a change output, but we don't bother shuffling them as it's obvious from the
@@ -115,7 +115,7 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
         SendRequest req = SendRequest.forTx(template);
         req.coinSelector = AllowUnconfirmedCoinSelector.get();
         req.shuffleOutputs = false;   // TODO: Fix things so shuffling is usable.
-        req = clientChannelModifier.modifySendRequest(req);
+        req = clientChannelProperties.modifyContractSendRequest(req);
         if (userKey != null) req.aesKey = userKey;
         wallet.completeTx(req);
         Coin multisigFee = req.tx.getFee();
