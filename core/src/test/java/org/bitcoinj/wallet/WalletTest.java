@@ -545,6 +545,16 @@ public class WalletTest extends TestWithWallet {
         assertEquals(v4, wallet.getBalance(Wallet.BalanceType.AVAILABLE));
     }
 
+    @Test
+    public void balanceWithIdenticalOutputs() {
+        assertEquals(Coin.ZERO, wallet.getBalance(BalanceType.ESTIMATED));
+        Transaction tx = new Transaction(PARAMS);
+        tx.addOutput(Coin.COIN, myAddress);
+        tx.addOutput(Coin.COIN, myAddress); // identical to the above
+        wallet.addWalletTransaction(new WalletTransaction(Pool.UNSPENT, tx));
+        assertEquals(Coin.COIN.plus(Coin.COIN), wallet.getBalance(BalanceType.ESTIMATED));
+    }
+
     // Intuitively you'd expect to be able to create a transaction with identical inputs and outputs and get an
     // identical result to Bitcoin Core. However the signatures are not deterministic - signing the same data
     // with the same key twice gives two different outputs. So we cannot prove bit-for-bit compatibility in this test
@@ -2152,6 +2162,17 @@ public class WalletTest extends TestWithWallet {
         Coin messagePrice = Coin.ZERO;
         Script script = ScriptBuilder.createOpReturnScript("hello world!".getBytes());
         tx.addOutput(messagePrice, script);
+        SendRequest request = SendRequest.forTx(tx);
+        request.ensureMinRequiredFee = true;
+        wallet.completeTx(request);
+    }
+
+    @Test
+    public void opReturnMaxBytes() throws Exception {
+        receiveATransaction(wallet, myAddress);
+        Transaction tx = new Transaction(PARAMS);
+        Script script = ScriptBuilder.createOpReturnScript(new byte[80]);
+        tx.addOutput(Coin.ZERO, script);
         SendRequest request = SendRequest.forTx(tx);
         request.ensureMinRequiredFee = true;
         wallet.completeTx(request);
