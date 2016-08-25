@@ -161,8 +161,13 @@ public abstract class PaymentChannelClientState {
             @Override
             public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                 synchronized (PaymentChannelClientState.this) {
-                    if (getContractInternal() == null) return;
-                    if (isSettlementTransaction(tx)) {
+                    if (getContractInternal() == null) {
+                        // no contract
+                    } else if (tx.getHash() == storedChannel.refund.getHash()) {
+                        log.warn("Detected refund transaction when active for channel {}",
+                                getContractInternal().getHash());
+                        //watchRefundConfirmations();
+                    } else if (isSettlementTransaction(tx)) {
                         log.info("Close: transaction {} closed contract {}", tx.getHash(), getContractInternal().getHash());
                         // Record the fact that it was closed along with the transaction that closed it.
                         stateMachine.transition(State.CLOSED);
@@ -171,11 +176,7 @@ public abstract class PaymentChannelClientState {
                         updateChannelInWallet();
                         watchCloseConfirmations();
                     }
-                    if (tx.getHash() == storedChannel.refund.getHash()) {
-                        log.warn("Detected refund transaction when active for channel {}",
-                                getContractInternal().getHash());
-                        //watchRefundConfirmations();
-                    }
+
                 }
             }
         });
