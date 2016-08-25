@@ -149,8 +149,13 @@ public abstract class PaymentChannelClientState {
 
     protected synchronized void initWalletListeners() {
         // Register a listener that watches out for the server closing the channel.
+        log.debug("initWalletListeners{}",
+                getContractInternal() == null ? "" : " for contract " + getContractInternal().getHashAsString());
         if (storedChannel != null && storedChannel.close != null) {
             watchCloseConfirmations();
+        } else if (storedChannel != null && storedChannel.expiryTimeSeconds() < Utils.currentTimeSeconds()) {
+            log.debug("Channel contract {} expired.", getContractInternal().getHashAsString());
+            //watchRefundConfirmations();
         }
         wallet.addCoinsReceivedEventListener(Threading.SAME_THREAD, new WalletCoinsReceivedEventListener() {
             @Override
@@ -165,6 +170,11 @@ public abstract class PaymentChannelClientState {
                         storedChannel.close = tx;
                         updateChannelInWallet();
                         watchCloseConfirmations();
+                    }
+                    if (tx.getHash() == storedChannel.refund.getHash()) {
+                        log.warn("Detected refund transaction when active for channel {}",
+                                getContractInternal().getHash());
+                        //watchRefundConfirmations();
                     }
                 }
             }
@@ -189,6 +199,27 @@ public abstract class PaymentChannelClientState {
                 Throwables.propagate(t);
             }
         });
+        log.debug("watchCloseConfirmations for {}", storedChannel.close.getHashAsString());
+    }
+
+    protected void watchRefundConfirmations() {
+        // When we see the refund transaction get enough confirmations, we can just delete the record
+        // of this channel.
+        final TransactionConfidence confidence = storedChannel.refund.getConfidence();
+        int numConfirms = Context.get().getEventHorizon();
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
+        Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
+            @Override
+            public void onSuccess(TransactionConfidence result) {
+                deleteChannelFromWallet();
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                Throwables.propagate(t);
+            }
+        });
+        log.debug("watchRefundConfirmations for {}", storedChannel.refund.getHashAsString());
     }
 
     private synchronized void deleteChannelFromWallet() {

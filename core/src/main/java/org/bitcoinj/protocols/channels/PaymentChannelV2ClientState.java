@@ -42,7 +42,7 @@ import static com.google.common.base.Preconditions.checkState;
  * instead of multisig transactions.
  */
 public class PaymentChannelV2ClientState extends PaymentChannelClientState {
-    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV1ClientState.class);
+    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV2ClientState.class);
 
     // How much value (in satoshis) is locked up into the channel.
     private final Coin totalValue;
@@ -147,6 +147,7 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
         refundTx.getInput(0).setScriptSig(ScriptBuilder.createCLTVPaymentChannelP2SHRefund(refundSignature, redeemScript));
 
         refundTx.getConfidence().setSource(TransactionConfidence.Source.SELF);
+        log.debug("Built refund transaction {}", refundTx);
         log.info("initiated channel with contract {}", contract.getHashAsString());
         stateMachine.transition(State.SAVE_STATE_IN_WALLET);
         // Client should now call getIncompleteRefundTransaction() and send it to the server.
