@@ -130,12 +130,20 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
         refundTx.addInput(contract.getOutput(0)).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
         refundTx.setLockTime(expiryTime);
         if (Context.get().isEnsureMinRequiredFee()) {
-            // Must pay min fee.
-            final Coin valueAfterFee = totalValue.subtract(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
+            // Calculate fee
+            final Coin useFee;
+            {
+                final Coin feePerKb = wallet.getContext().getFeePerKb();
+                final Coin minFee = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE;
+                final Coin fee = feePerKb.div(3); // Guess refund Tx is less than < 1/3 kb.
+
+                useFee = fee.isLessThan(minFee) ? minFee : fee;
+            }
+            final Coin valueAfterFee = totalValue.subtract(useFee);
             if (Transaction.MIN_NONDUST_OUTPUT.compareTo(valueAfterFee) > 0)
                 throw new ValueOutOfRangeException("totalValue too small to use");
             refundTx.addOutput(valueAfterFee, myKey.toAddress(params));
-            refundFees = multisigFee.add(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
+            refundFees = multisigFee.add(useFee);
         } else {
             refundTx.addOutput(totalValue, myKey.toAddress(params));
             refundFees = multisigFee;

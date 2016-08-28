@@ -205,6 +205,29 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     }
 
     /**
+     * Get an immutable view of current status for all known channels {@link ClientChannelStatusView}s
+     */
+    public List<ClientChannelStatusView> getClientChannelsStatusView() {
+        TxConfidenceTable confidenceTable = containingWallet.getContext().getConfidenceTable();
+
+        lock.lock();
+        try {
+            ArrayList<ClientChannelStatusView> channels = new ArrayList<ClientChannelStatusView>();
+            for (Map.Entry<Sha256Hash, Collection<StoredClientChannel>> storedChannelsWithId : mapChannels.asMap().entrySet()) {
+                for (StoredClientChannel storedChannel : storedChannelsWithId.getValue()) {
+                    channels.add(new ClientChannelStatusView(storedChannel, confidenceTable));
+                }
+            }
+
+            return channels;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+
+
+    /**
      * Notifies the set of stored states that a channel has been updated. Use to notify the wallet of an update to this
      * wallet extension.
      */
