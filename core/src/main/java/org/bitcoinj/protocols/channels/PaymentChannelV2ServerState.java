@@ -42,7 +42,7 @@ import java.util.Locale;
  * instead of multisig transactions.
  */
 public class PaymentChannelV2ServerState extends PaymentChannelServerState {
-    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV1ServerState.class);
+    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV2ServerState.class);
 
     // The total value locked into the CLTV output and the value to us in the last signature the client provided
     private Coin feePaidForPayment;
