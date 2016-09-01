@@ -16,7 +16,11 @@
 
 package org.bitcoinj.protocols.channels;
 
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import org.bitcoinj.core.*;
 import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
@@ -111,7 +115,23 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             channel.closeConnectedHandler();
             try {
                 TransactionBroadcaster broadcaster = getBroadcaster();
-                channel.getOrCreateState(wallet, broadcaster).close();
+                if (channel.close == null) {
+                    log.debug("Channel not closed yet {} ", channel.contract.getHash());
+                    PaymentChannelServerState state = channel.getOrCreateState(wallet, broadcaster);
+                    state.close();
+                    channel.close = state.closeTx;
+                } else {
+                    log.debug("Channel was already closed {} ", channel.contract.getHash());
+                    if (channel.contract.getConfidence().getDepthInBlocks() == 0) {
+                        log.debug("Broadcasting unconfirmed close again {} ", channel.close.getHash());
+                        TransactionBroadcast tb = broadcaster.broadcastTransaction(channel.close);
+                    }
+                }
+
+                // If channel already was closed or was closed now.
+                if (channel.close != null)
+                    watchCloseConfirmations(channel.contract.getHash(), channel.close);
+
             } catch (InsufficientMoneyException e) {
                 log.error("Exception when closing channel", e);
             } catch (VerificationException e) {
@@ -121,6 +141,35 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         }
         updatedChannel(channel);
     }
+
+    private void watchCloseConfirmations(final Sha256Hash contractHash, final Transaction closeTx) {
+        // When we see the close transaction get enough confirmations, we can just delete the record
+        // of this channel from the wallet, because we're not going to need it..
+        final TransactionConfidence confidence = closeTx.getConfidence();
+        int numConfirms = Context.get().getEventHorizon();
+        log.info("Watching contract {} closing with {} of depth = {}, waiting for depth {}",
+                contractHash, closeTx.getHashAsString(),
+                confidence.getDepthInBlocks(), numConfirms);
+
+        final StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
+                wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
+
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
+        Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
+            @Override
+            public void onSuccess(TransactionConfidence result) {
+                log.info("Deleting channel from wallet: {} when close tx {} is safely confirmed, depth = {}",
+                        contractHash, closeTx.getHashAsString(), result.getDepthInBlocks());
+                channels.removeChannel(contractHash);
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                Throwables.propagate(t);
+            }
+        });
+    }
+
 
     void removeChannel(Sha256Hash contractHash) {
         lock.lock();
@@ -287,7 +336,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                         majorVersion,
                         params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
                         clientOutput,
-                        params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
+                        params.getDefaultSerializer().makeTransaction(storedState.getCloseTransaction().toByteArray()),
                         storedState.getRefundTransactionUnlockTimeSecs(),
                         ECKey.fromPrivate(storedState.getMyKey().toByteArray()),
                         clientKey,

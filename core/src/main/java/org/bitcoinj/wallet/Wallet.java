@@ -5012,9 +5012,9 @@ public class Wallet extends BaseTaggableObject
                     key = findKeyFromPubHash(script.getPubKeyHash());
                     checkNotNull(key, "Coin selection includes unspendable outputs");
                 } else if (script.isPayToScriptHash()) {
-                    log.debug("isPayToScriptHash");
-                    log.debug("script = " + script);
-                    log.debug("findRedeemDataFromScriptHash(script.getPubKeyHash()) = " + findRedeemDataFromScriptHash(script.getPubKeyHash()));
+                    log.info("isPayToScriptHash");
+                    log.info("script = " + script);
+                    log.info("findRedeemDataFromScriptHash(script.getPubKeyHash()) = " + findRedeemDataFromScriptHash(script.getPubKeyHash()));
                     redeemScript = findRedeemDataFromScriptHash(script.getPubKeyHash()).redeemScript;
                     checkNotNull(redeemScript, "Coin selection includes unspendable outputs");
                 }

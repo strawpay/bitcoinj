@@ -116,6 +116,7 @@ public abstract class PaymentChannelServerState {
 
     // The contract and the output script from it
     protected Transaction contract = null;
+    protected Transaction closeTx = null;
 
     PaymentChannelServerState(StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         synchronized (storedServerChannel) {
@@ -123,6 +124,7 @@ public abstract class PaymentChannelServerState {
             this.wallet = checkNotNull(wallet);
             this.broadcaster = checkNotNull(broadcaster);
             this.contract = checkNotNull(storedServerChannel.contract);
+            this.closeTx = storedServerChannel.close;
             this.serverKey = checkNotNull(storedServerChannel.myKey);
             this.storedServerChannel = storedServerChannel;
             this.bestValueToMe = checkNotNull(storedServerChannel.bestValueToMe);
@@ -383,34 +385,6 @@ public abstract class PaymentChannelServerState {
             return null;
         }
         return contract.getOutput(0).getScriptPubKey();
-    }
-
-    protected void watchCloseConfirmations(final Transaction closeTx) {
-        // When we see the close transaction get enough confirmations, we can just delete the record
-        // of this channel from the wallet, because we're not going to need it..
-        final TransactionConfidence confidence = closeTx.getConfidence();
-        int numConfirms = Context.get().getEventHorizon();
-        log.info("Watching contract {} closing with {} of depth = {}, waiting for depth {}",
-                contract.getHashAsString(), closeTx.getHashAsString(),
-                confidence.getDepthInBlocks(), numConfirms);
-
-        final StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
-
-        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
-        Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
-            @Override
-            public void onSuccess(TransactionConfidence result) {
-                log.info("Deleting channel from wallet: {} when close tx {} is safely confirmed, depth = {}",
-                        contract.getHashAsString(), closeTx.getHashAsString(), result.getDepthInBlocks());
-                channels.removeChannel(contract.getHash());
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                Throwables.propagate(t);
-            }
-        });
     }
 
     /**

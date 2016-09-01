@@ -192,6 +192,11 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      */
     @Override
     public synchronized ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
+        if (closeTx != null) {
+            log.info("close() called on already closed contract {} with close tx {}", contract, closeTx);
+            return closedFuture;
+        }
+
         if (storedServerChannel != null) {
             StoredServerChannel temp = storedServerChannel;
             storedServerChannel = null;
@@ -246,11 +251,11 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
             throw new RuntimeException(e);  // Should never happen.
         }
         stateMachine.transition(State.CLOSING);
-        log.info("Closing channel, broadcasting tx {}", tx);
-        // The act of broadcasting the transaction will add it to the wallet.
-        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(tx).future();
 
-        watchCloseConfirmations(tx);
+        closeTx = tx;
+        log.info("Closing channel, broadcasting tx {}", closeTx);
+        // The act of broadcasting the transaction will add it to the wallet.
+        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
 
         Futures.addCallback(future, new FutureCallback<Transaction>() {
             @Override public void onSuccess(Transaction transaction) {
