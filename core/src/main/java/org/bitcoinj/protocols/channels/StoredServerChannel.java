@@ -39,6 +39,8 @@ public class StoredServerChannel {
     byte[] bestValueSignature;
     long refundTransactionUnlockTimeSecs;
     Transaction contract;
+    @Nullable
+    Transaction close;
     TransactionOutput clientOutput;
     ECKey myKey;
     // Used in protocol v2 only
@@ -50,10 +52,11 @@ public class StoredServerChannel {
     PaymentChannelServerState state = null;
 
     StoredServerChannel(@Nullable PaymentChannelServerState state, int majorVersion, Transaction contract, TransactionOutput clientOutput,
-                        long refundTransactionUnlockTimeSecs, ECKey myKey, ECKey clientKey, Coin bestValueToMe, @Nullable byte[] bestValueSignature) {
+                        Transaction close, long refundTransactionUnlockTimeSecs, ECKey myKey, ECKey clientKey, Coin bestValueToMe, @Nullable byte[] bestValueSignature) {
         this.majorVersion = majorVersion;
         this.contract = contract;
         this.clientOutput = clientOutput;
+        this.close = close;
         this.refundTransactionUnlockTimeSecs = refundTransactionUnlockTimeSecs;
         this.myKey = myKey;
         this.clientKey = clientKey;
@@ -130,9 +133,11 @@ public class StoredServerChannel {
                 "    Value to me:   %s%n" +
                 "    Client output: %s%n" +
                 "    Refund unlock: %s (%d unix time)%n" +
-                "    Contract:    %s%n",
+                "    Contract:    %s%n" +
+                "    Close:    %s%n",
                 connectedHandler != null ? "connected" : "disconnected", majorVersion, myKey, bestValueToMe,
                 clientOutput,  new Date(refundTransactionUnlockTimeSecs * 1000), refundTransactionUnlockTimeSecs,
-                contract.toString().replaceAll(newline, newline + "    "));
+                contract.toString().replaceAll(newline, newline + "    "),
+                close != null ? close.toString().replaceAll(newline, newline + "    ") : "");
     }
 }

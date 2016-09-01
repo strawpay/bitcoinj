@@ -16,6 +16,8 @@
 
 package org.bitcoinj.protocols.channels;
 
+import com.google.common.base.Throwables;
+import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 
@@ -110,7 +112,7 @@ public abstract class PaymentChannelServerState {
 
     protected long minExpireTime;
 
-    protected StoredServerChannel storedServerChannel = null;
+    protected StoredServerChannel storedServerChannel;
 
     // The contract and the output script from it
     protected Transaction contract = null;
@@ -368,7 +370,7 @@ public abstract class PaymentChannelServerState {
         log.info("Storing state with contract hash {}.", getContract().getHash());
         StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
                 wallet.addOrGetExistingExtension(new StoredPaymentChannelServerStates(wallet, broadcaster));
-        storedServerChannel = new StoredServerChannel(this, getMajorVersion(), getContract(), getClientOutput(), getExpiryTime(), serverKey, getClientKey(), bestValueToMe, bestValueSignature);
+        storedServerChannel = new StoredServerChannel(this, getMajorVersion(), getContract(), getClientOutput(), null, getExpiryTime(), serverKey, getClientKey(), bestValueToMe, bestValueSignature);
         if (connectedHandler != null)
             checkState(storedServerChannel.setConnectedHandler(connectedHandler, false) == connectedHandler);
         channels.putChannel(storedServerChannel);
@@ -381,6 +383,34 @@ public abstract class PaymentChannelServerState {
             return null;
         }
         return contract.getOutput(0).getScriptPubKey();
+    }
+
+    protected void watchCloseConfirmations(final Transaction closeTx) {
+        // When we see the close transaction get enough confirmations, we can just delete the record
+        // of this channel from the wallet, because we're not going to need it..
+        final TransactionConfidence confidence = closeTx.getConfidence();
+        int numConfirms = Context.get().getEventHorizon();
+        log.info("Watching contract {} closing with {} of depth = {}, waiting for depth {}",
+                contract.getHashAsString(), closeTx.getHashAsString(),
+                confidence.getDepthInBlocks(), numConfirms);
+
+        final StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
+                wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
+
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
+        Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
+            @Override
+            public void onSuccess(TransactionConfidence result) {
+                log.info("Deleting channel from wallet: {} when close tx {} is safely confirmed, depth = {}",
+                        contract.getHashAsString(), closeTx.getHashAsString(), result.getDepthInBlocks());
+                channels.removeChannel(contract.getHash());
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                Throwables.propagate(t);
+            }
+        });
     }
 
     /**

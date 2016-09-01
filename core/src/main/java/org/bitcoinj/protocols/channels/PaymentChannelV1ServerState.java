@@ -249,6 +249,9 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
         log.info("Closing channel, broadcasting tx {}", tx);
         // The act of broadcasting the transaction will add it to the wallet.
         ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(tx).future();
+
+        watchCloseConfirmations(tx);
+
         Futures.addCallback(future, new FutureCallback<Transaction>() {
             @Override public void onSuccess(Transaction transaction) {
                 log.info("TX {} propagated, channel successfully closed.", transaction.getHash());

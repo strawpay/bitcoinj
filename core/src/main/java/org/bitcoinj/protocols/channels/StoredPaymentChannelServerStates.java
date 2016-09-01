@@ -107,13 +107,6 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * this wallet extension.</p>
      */
     public void closeChannel(StoredServerChannel channel) {
-        lock.lock();
-        try {
-            if (mapChannels.remove(channel.contract.getHash()) == null)
-                return;
-        } finally {
-            lock.unlock();
-        }
         synchronized (channel) {
             channel.closeConnectedHandler();
             try {
@@ -125,6 +118,19 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 log.error("Exception when closing channel", e);
             }
             channel.state = null;
+        }
+        updatedChannel(channel);
+    }
+
+    void removeChannel(Sha256Hash contractHash) {
+        lock.lock();
+        final StoredServerChannel channel;
+        try {
+            channel = mapChannels.remove(contractHash);
+            if (channel == null)
+                return;
+        } finally {
+            lock.unlock();
         }
         updatedChannel(channel);
     }
@@ -281,6 +287,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                         majorVersion,
                         params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
                         clientOutput,
+                        params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
                         storedState.getRefundTransactionUnlockTimeSecs(),
                         ECKey.fromPrivate(storedState.getMyKey().toByteArray()),
                         clientKey,
