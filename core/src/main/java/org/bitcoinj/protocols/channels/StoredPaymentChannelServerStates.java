@@ -122,16 +122,19 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                     channel.close = state.closeTx;
                 } else {
                     log.debug("Channel was already closed {} ", channel.contract.getHash());
-                    if (channel.contract.getConfidence().getDepthInBlocks() == 0) {
+                    if (channel.close.getConfidence().getDepthInBlocks() == 0) {
                         log.debug("Broadcasting unconfirmed close again {} ", channel.close.getHash());
                         TransactionBroadcast tb = broadcaster.broadcastTransaction(channel.close);
                     }
                 }
 
                 // If channel already was closed or was closed now.
-                if (channel.close != null)
-                    watchCloseConfirmations(channel.contract.getHash(), channel.close);
+                if (channel.close != null) {
+                    watchTxConfirmations(channel.contract.getHash(), channel.close);
+                }
 
+                // Check independent of other things if contract is settled somehow, remove channel later (when settle is deep in chain);.
+                checkIfSettled(channel.contract.getHash());
             } catch (InsufficientMoneyException e) {
                 log.error("Exception when closing channel", e);
             } catch (VerificationException e) {
@@ -142,25 +145,48 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         updatedChannel(channel);
     }
 
-    private void watchCloseConfirmations(final Sha256Hash contractHash, final Transaction closeTx) {
-        // When we see the close transaction get enough confirmations, we can just delete the record
-        // of this channel from the wallet, because we're not going to need it..
-        final TransactionConfidence confidence = closeTx.getConfidence();
-        int numConfirms = Context.get().getEventHorizon();
-        log.info("Watching contract {} closing with {} of depth = {}, waiting for depth {}",
-                contractHash, closeTx.getHashAsString(),
-                confidence.getDepthInBlocks(), numConfirms);
+    private boolean checkIfSettled(final Sha256Hash contractHash) {
+        log.debug("checkIfSettled contract={}", contractHash);
 
-        final StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
+        final Transaction contract = wallet.getTransaction(contractHash);
+        if (contract != null) {
+            if (!contract.getOutput(0).isAvailableForSpending()) {
+                log.debug("contract.getOutput(0).isMine(wallet) {}", contract.getOutput(0).isMine(wallet));
+                log.debug("contract.getOutput(0).isWatched(wallet) {}", contract.getOutput(0).isWatched(wallet));
+                log.debug("contract.getOutput(0).getParentTransactionDepthInBlocks() {}", contract.getOutput(0).getParentTransactionDepthInBlocks());
+
+                final Transaction settle = contract.getOutput(0).getSpentBy().getParentTransaction();
+                if (settle == null) {
+                    log.warn("No settle tx found when contract={} getOutput(0).isAvailableForSpending = false", contractHash);
+                    return false;
+                } else {
+                    watchTxConfirmations(contractHash, settle);
+                    return true;
+                }
+            } else {
+                log.debug("contract {} getOutput(0).isAvailableForSpending=true", contractHash);
+                return false;
+            }
+        } else {
+            log.warn("No tx found in wallet for contract={}", contractHash);
+            return false;
+        }
+    }
+
+    private void watchTxConfirmations(final Sha256Hash contractHash, final Transaction settle) {
+        final TransactionConfidence confidence = settle.getConfidence();
+        int numConfirms = Context.get().getEventHorizon();
+        log.info("Watching contract {} settling with {} of depth = {}, waiting for depth {}",
+                contractHash, settle.getHashAsString(),
+                confidence.getDepthInBlocks(), numConfirms);
 
         ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
         Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
             @Override
             public void onSuccess(TransactionConfidence result) {
-                log.info("Deleting channel from wallet: {} when close tx {} is safely confirmed, depth = {}",
-                        contractHash, closeTx.getHashAsString(), result.getDepthInBlocks());
-                channels.removeChannel(contractHash);
+                log.info("Deleting channel from wallet: {} when tx {} is safely confirmed, depth = {}",
+                        contractHash, settle.getHashAsString(), result.getDepthInBlocks());
+                removeChannel(contractHash);
             }
 
             @Override
@@ -169,6 +195,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             }
         });
     }
+
 
 
     void removeChannel(Sha256Hash contractHash) {
@@ -231,7 +258,8 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * wallet extension.
      */
     public void updatedChannel(final StoredServerChannel channel) {
-        log.info("Stored server channel {} was updated", channel.hashCode());
+        //log.info("Stored server channel {} was updated", channel.hashCode());
+        log.debug("Stored server channel {} was updated", channel);
         wallet.addOrUpdateExtension(this);
     }
 
@@ -308,6 +336,8 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 }
                 if (channel.bestValueSignature != null)
                     channelBuilder.setBestValueSignature(ByteString.copyFrom(channel.bestValueSignature));
+                if (channel.close != null)
+                    channelBuilder.setCloseTransaction(ByteString.copyFrom(channel.close.unsafeBitcoinSerialize()));
                 builder.addChannels(channelBuilder);
             }
             return builder.build().toByteArray();
@@ -332,11 +362,18 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 } else {
                     clientKey = ECKey.fromPublicOnly(storedState.getClientKey().toByteArray());
                 }
+                final Transaction contract, close;
+                {
+                    contract = params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray());
+                    close = storedState.hasCloseTransaction() ?
+                            params.getDefaultSerializer().makeTransaction(storedState.getCloseTransaction().toByteArray()) :
+                            null;
+                }
                 StoredServerChannel channel = new StoredServerChannel(null,
                         majorVersion,
-                        params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
+                        contract,
                         clientOutput,
-                        params.getDefaultSerializer().makeTransaction(storedState.getCloseTransaction().toByteArray()),
+                        close,
                         storedState.getRefundTransactionUnlockTimeSecs(),
                         ECKey.fromPrivate(storedState.getMyKey().toByteArray()),
                         clientKey,

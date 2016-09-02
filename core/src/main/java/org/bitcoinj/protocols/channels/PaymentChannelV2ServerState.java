@@ -153,6 +153,8 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
             return closedFuture;
         }
 
+        log.debug("close: storedServerChannel={}", storedServerChannel);
+
         if (storedServerChannel != null) {
             StoredServerChannel temp = storedServerChannel;
             storedServerChannel = null;
@@ -162,6 +164,8 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
             if (getState().compareTo(State.CLOSING) >= 0)
                 return closedFuture;
         }
+
+        log.debug("close: getState()={}", getState());
 
         if (getState().ordinal() < State.READY.ordinal()) {
             log.error("Attempt to settle channel in state " + getState());
@@ -226,6 +230,8 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
                 closedFuture.setException(throwable);
             }
         });
+        log.debug("close: finished");
+
         return closedFuture;
     }
 }

@@ -133,6 +133,8 @@ public abstract class PaymentChannelServerState {
             checkArgument(bestValueToMe.equals(Coin.ZERO) || bestValueSignature != null);
             storedServerChannel.state = this;
         }
+        log.debug("Constructed PaymentChannelServerState from StoredServerChannel {}", storedServerChannel);
+        log.warn("TRACE {}", new Throwable("P1"));
     }
 
     /**
@@ -150,6 +152,8 @@ public abstract class PaymentChannelServerState {
         this.wallet = checkNotNull(wallet);
         this.broadcaster = checkNotNull(broadcaster);
         this.minExpireTime = minExpireTime;
+        log.debug("Constructed PaymentChannelServerState state = UNINITIALISED");
+        log.warn("TRACE {}", new Throwable("P1"));
     }
 
     public abstract int getMajorVersion();
