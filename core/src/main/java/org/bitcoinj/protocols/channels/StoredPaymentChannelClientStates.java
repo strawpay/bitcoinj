@@ -53,6 +53,8 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     private static final Logger log = LoggerFactory.getLogger(StoredPaymentChannelClientStates.class);
     static final String EXTENSION_ID = StoredPaymentChannelClientStates.class.getName();
     static final int MAX_SECONDS_TO_WAIT_FOR_BROADCASTER_TO_BE_SET = 10;
+
+    // TODO Should match/relate to when a server closes safe amount of time before expiry
     static final int SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL = 30 * 60;
 
     @GuardedBy("lock") @VisibleForTesting final HashMultimap<Sha256Hash, StoredClientChannel> mapChannels = HashMultimap.create();
@@ -104,12 +106,15 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     /** Returns the outstanding amount of money sent back to us for all channels to this server added together. */
     public Coin getBalanceForServer(Sha256Hash id) {
         Coin balance = Coin.ZERO;
+        final long nowSeconds = Utils.currentTimeSeconds();
+        final long marginSeconds = SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL;
+
         lock.lock();
         try {
             Set<StoredClientChannel> setChannels = mapChannels.get(id);
             for (StoredClientChannel channel : setChannels) {
                 synchronized (channel) {
-                    if (channel.close != null) continue;
+                    if (channel.close != null || nowSeconds - channel.expiryTimeSeconds() >= marginSeconds) continue;
                     balance = balance.add(channel.valueToMe);
                 }
             }
@@ -247,9 +252,8 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     // Adds this channel and optionally notifies the wallet of an update to this extension (used during deserialize)
     private void putChannel(final StoredClientChannel channel, boolean updateWallet) {
         lock.lock();
-        log.debug("putChannel {}", channel.contract.getHashAsString());
-
         try {
+            log.debug("putChannel {}", channel.contract.getHashAsString());
             mapChannels.put(channel.id, channel);
         } catch (Exception e) {
             log.error("putChannel failed", e);
@@ -441,14 +445,18 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     void installExpiryTimer(final StoredClientChannel storedChannel) {
         synchronized (storedChannel) {
             Date expiryTime = new Date(storedChannel.expiryTimeSeconds() * 1000 + (System.currentTimeMillis() - Utils.currentTimeMillis()));
-            log.debug("installExpiryTimer for expiry at {} of channel {}", expiryTime, storedChannel.contract.getHashAsString());
+            final String channelStr = storedChannel.contract.getHashAsString();
+            log.debug("installExpiryTimer for expiry at {} of channel {}", expiryTime, channelStr);
             channelTimeoutHandler.schedule(new TimerTask() {
                 @Override
                 public void run() {
                     try {
                         final Transaction contract;
                         final Transaction refund;
+                        log.debug("TimerTask - running at {}", new Date(System.currentTimeMillis()));
+                        log.debug("TimerTask - Synchronizing on storedChannel {}", channelStr);
                         synchronized (storedChannel) {
+                            log.debug("TimerTask - Locked storedChannel {}", channelStr);
                             contract = storedChannel.contract;
                             refund = storedChannel.refund;
                         }

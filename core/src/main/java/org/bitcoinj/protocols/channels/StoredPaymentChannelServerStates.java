@@ -111,7 +111,10 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * this wallet extension.</p>
      */
     public void closeChannel(StoredServerChannel channel) {
+        log.debug("Synchronizing on channel {} (closeChannel) storedChannel.hashCode {}", channel.contract.getHashAsString(), channel.hashCode());
         synchronized (channel) {
+            log.debug("Locked channel {}, storedChannel.hashCode {}", channel.contract.getHashAsString(), channel.hashCode());
+
             channel.closeConnectedHandler();
             try {
                 TransactionBroadcaster broadcaster = getBroadcaster();
@@ -137,6 +140,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 checkIfSettled(channel.contract.getHash());
             } catch (InsufficientMoneyException e) {
                 log.error("Exception when closing channel", e);
+                removeChannel(channel.contract.getHash());
             } catch (VerificationException e) {
                 log.error("Exception when closing channel", e);
             }
@@ -198,7 +202,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
 
 
-    void removeChannel(Sha256Hash contractHash) {
+    private void removeChannel(Sha256Hash contractHash) {
         lock.lock();
         final StoredServerChannel channel;
         try {

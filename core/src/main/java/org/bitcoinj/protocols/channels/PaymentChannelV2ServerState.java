@@ -57,7 +57,11 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
         super(storedServerChannel, wallet, broadcaster);
         synchronized (storedServerChannel) {
             this.clientKey = storedServerChannel.clientKey;
-            stateMachine.transition(State.READY);
+            if (storedServerChannel.close == null) {
+                stateMachine.transition(State.READY);
+            } else {
+                stateMachine.transition(State.CLOSED);
+            }
         }
     }
 
@@ -70,6 +74,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
     public Multimap<State, State> getStateTransitions() {
         Multimap<State, State> result = MultimapBuilder.enumKeys(State.class).arrayListValues().build();
         result.put(State.UNINITIALISED, State.READY);
+        result.put(State.UNINITIALISED, State.CLOSED);
         result.put(State.UNINITIALISED, State.WAITING_FOR_MULTISIG_CONTRACT);
         result.put(State.WAITING_FOR_MULTISIG_CONTRACT, State.WAITING_FOR_MULTISIG_ACCEPTANCE);
         result.put(State.WAITING_FOR_MULTISIG_ACCEPTANCE, State.READY);
@@ -148,6 +153,8 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
 
     @Override
     public synchronized ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
+        log.debug("state instance hashCode {}", hashCode());
+
         if (closeTx != null) {
             log.info("close() called on already closed contract {} with close tx {}", contract, closeTx);
             return closedFuture;

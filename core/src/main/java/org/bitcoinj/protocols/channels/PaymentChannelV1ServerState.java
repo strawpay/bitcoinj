@@ -61,7 +61,11 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
             this.clientKey = ECKey.fromPublicOnly(getContractScript().getChunks().get(1).data);
             this.clientOutput = checkNotNull(storedServerChannel.clientOutput);
             this.refundTransactionUnlockTimeSecs = storedServerChannel.refundTransactionUnlockTimeSecs;
-            stateMachine.transition(State.READY);
+            if (storedServerChannel.close == null) {
+                stateMachine.transition(State.READY);
+            } else {
+                stateMachine.transition(State.CLOSED);
+            }
         }
     }
 
@@ -83,6 +87,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
     public Multimap<State, State> getStateTransitions() {
         Multimap<State, State> result = MultimapBuilder.enumKeys(State.class).arrayListValues().build();
         result.put(State.UNINITIALISED, State.READY);
+        result.put(State.UNINITIALISED, State.CLOSED);
         result.put(State.UNINITIALISED, State.WAITING_FOR_REFUND_TRANSACTION);
         result.put(State.WAITING_FOR_REFUND_TRANSACTION, State.WAITING_FOR_MULTISIG_CONTRACT);
         result.put(State.WAITING_FOR_MULTISIG_CONTRACT, State.WAITING_FOR_MULTISIG_ACCEPTANCE);

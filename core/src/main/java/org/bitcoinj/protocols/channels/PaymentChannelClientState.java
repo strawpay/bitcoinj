@@ -161,9 +161,12 @@ public abstract class PaymentChannelClientState {
             @Override
             public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                 synchronized (PaymentChannelClientState.this) {
+                    log.debug("onCoinsReceived tx {}, storedChannel {}", tx.getHashAsString(), storedChannel);
+
                     if (getContractInternal() == null) {
                         // no contract
-                    } else if (tx.getHash() == storedChannel.refund.getHash()) {
+                        log.debug("No contract");
+                    } else if (storedChannel != null && tx.getHash() == storedChannel.refund.getHash()) {
                         log.warn("Detected refund transaction when active for channel {}",
                                 getContractInternal().getHash());
                         //watchRefundConfirmations();
@@ -176,7 +179,6 @@ public abstract class PaymentChannelClientState {
                         updateChannelInWallet();
                         watchCloseConfirmations();
                     }
-
                 }
             }
         });
@@ -201,26 +203,6 @@ public abstract class PaymentChannelClientState {
             }
         });
         log.debug("watchCloseConfirmations for {}", storedChannel.close.getHashAsString());
-    }
-
-    protected void watchRefundConfirmations() {
-        // When we see the refund transaction get enough confirmations, we can just delete the record
-        // of this channel.
-        final TransactionConfidence confidence = storedChannel.refund.getConfidence();
-        int numConfirms = Context.get().getEventHorizon();
-        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
-        Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
-            @Override
-            public void onSuccess(TransactionConfidence result) {
-                deleteChannelFromWallet();
-            }
-
-            @Override
-            public void onFailure(Throwable t) {
-                Throwables.propagate(t);
-            }
-        });
-        log.debug("watchRefundConfirmations for {}", storedChannel.refund.getHashAsString());
     }
 
     private synchronized void deleteChannelFromWallet() {
