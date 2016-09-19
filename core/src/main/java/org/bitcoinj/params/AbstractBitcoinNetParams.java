@@ -41,10 +41,12 @@ import org.bitcoinj.core.BitcoinSerializer;
  * Parameters for Bitcoin-like networks.
  */
 public abstract class AbstractBitcoinNetParams extends NetworkParameters {
+
     /**
      * Scheme part for Bitcoin URIs.
      */
     public static final String BITCOIN_SCHEME = "bitcoin";
+    public static final int REWARD_HALVING_INTERVAL = 210000;
 
     private static final Logger log = LoggerFactory.getLogger(AbstractBitcoinNetParams.class);
 
@@ -52,13 +54,22 @@ public abstract class AbstractBitcoinNetParams extends NetworkParameters {
         super();
     }
 
-    /** 
-     * Checks if we are at a difficulty transition point. 
-     * @param storedPrev The previous stored block 
-     * @return If this is a difficulty transition point 
+    /**
+     * Checks if we are at a reward halving point.
+     * @param height The height of the previous stored block
+     * @return If this is a reward halving point
      */
-    protected boolean isDifficultyTransitionPoint(StoredBlock storedPrev) {
-        return ((storedPrev.getHeight() + 1) % this.getInterval()) == 0;
+    public final boolean isRewardHalvingPoint(final int height) {
+        return ((height + 1) % REWARD_HALVING_INTERVAL) == 0;
+    }
+
+    /**
+     * Checks if we are at a difficulty transition point.
+     * @param height The height of the previous stored block
+     * @return If this is a difficulty transition point
+     */
+    public final boolean isDifficultyTransitionPoint(final int height) {
+        return ((height + 1) % this.getInterval()) == 0;
     }
 
     @Override
@@ -67,7 +78,7 @@ public abstract class AbstractBitcoinNetParams extends NetworkParameters {
         Block prev = storedPrev.getHeader();
 
         // Is this supposed to be a difficulty transition point?
-        if (!isDifficultyTransitionPoint(storedPrev)) {
+        if (!isDifficultyTransitionPoint(storedPrev.getHeight())) {
 
             // No ... so check the difficulty didn't actually change.
             if (nextBlock.getDifficultyTarget() != prev.getDifficultyTarget())

@@ -16,7 +16,6 @@
 
 package org.bitcoinj.protocols.channels;
 
-import com.google.common.collect.HashMultimap;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelClient.VersionSelector;
 import org.bitcoinj.store.MemoryBlockStore;
@@ -222,7 +221,6 @@ public class ChannelConnectionTest extends TestWithWallet {
                         };
                     }
                 });
- //       final int port = portBase + (isMultiSigContract() ? 0 : 10);
         server.bindAndStart(0);
 
         final int port = server.getPort();
