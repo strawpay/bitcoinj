@@ -179,12 +179,12 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
     private void watchTxConfirmations(final Sha256Hash contractHash, final Transaction settle) {
         final TransactionConfidence confidence = settle.getConfidence();
-        int numConfirms = Context.get().getEventHorizon();
+        int numConfirms = wallet.getContext().getEventHorizon();
         log.info("Watching contract {} settling with {} of depth = {}, waiting for depth {}",
                 contractHash, settle.getHashAsString(),
                 confidence.getDepthInBlocks(), numConfirms);
 
-        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.USER_THREAD);
         Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
             @Override
             public void onSuccess(TransactionConfidence result) {

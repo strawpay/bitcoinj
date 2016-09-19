@@ -129,7 +129,7 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
         // by using this sequence value, we avoid extra full replace-by-fee and relative lock time processing.
         refundTx.addInput(contract.getOutput(0)).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
         refundTx.setLockTime(expiryTime);
-        if (Context.get().isEnsureMinRequiredFee()) {
+        if (wallet.getContext().isEnsureMinRequiredFee()) {
             // Calculate fee
             final Coin useFee;
             {

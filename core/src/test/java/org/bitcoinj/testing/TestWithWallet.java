@@ -22,6 +22,8 @@ import org.bitcoinj.store.BlockStore;
 import org.bitcoinj.store.MemoryBlockStore;
 import org.bitcoinj.utils.BriefLogFormatter;
 import org.bitcoinj.wallet.Wallet;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -37,6 +39,8 @@ import static org.bitcoinj.testing.FakeTxBuilder.createFakeTx;
  * fee per kilobyte to zero in setUp.
  */
 public class TestWithWallet {
+    private static final Logger log = LoggerFactory.getLogger(TestWithWallet.class);
+
     protected static final NetworkParameters PARAMS = UnitTestParams.get();
     protected ECKey myKey;
     protected Address myAddress;
@@ -46,12 +50,15 @@ public class TestWithWallet {
 
     public void setUp() throws Exception {
         BriefLogFormatter.init();
-        Context.propagate(new Context(PARAMS, 100, Coin.ZERO, false));
-        wallet = new Wallet(PARAMS);
+
+        final Context context = new Context(PARAMS, 100, Coin.ZERO, false);
+        Context.propagate(context);
+
+        wallet = new Wallet(context);
         myKey = wallet.currentReceiveKey();
-        myAddress = myKey.toAddress(PARAMS);
-        blockStore = new MemoryBlockStore(PARAMS);
-        chain = new BlockChain(PARAMS, wallet, blockStore);
+        myAddress = myKey.toAddress(context.getParams());
+        blockStore = new MemoryBlockStore(context.getParams());
+        chain = new BlockChain(context, wallet, blockStore);
     }
 
     public void tearDown() throws Exception {

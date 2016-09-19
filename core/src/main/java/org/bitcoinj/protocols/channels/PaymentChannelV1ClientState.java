@@ -157,7 +157,7 @@ public class PaymentChannelV1ClientState extends PaymentChannelClientState {
         // by using this sequence value, we avoid extra full replace-by-fee and relative lock time processing.
         refundTx.addInput(multisigOutput).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
         refundTx.setLockTime(expiryTime);
-        if (Context.get().isEnsureMinRequiredFee()) {
+        if (wallet.getContext().isEnsureMinRequiredFee()) {
             // Must pay min fee.
             final Coin valueAfterFee = totalValue.subtract(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
             if (Transaction.MIN_NONDUST_OUTPUT.compareTo(valueAfterFee) > 0)

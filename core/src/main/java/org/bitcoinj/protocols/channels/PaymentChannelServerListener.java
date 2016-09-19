@@ -160,6 +160,10 @@ public class PaymentChannelServerListener {
         server.awaitRunning();
     }
 
+    public int getPort() {
+        return server.getPort();
+    }
+
     /**
      * Sets up a new payment channel server which listens on the given port.
      *

@@ -157,7 +157,7 @@ public abstract class PaymentChannelClientState {
             log.debug("Channel contract {} expired.", getContractInternal().getHashAsString());
             //watchRefundConfirmations();
         }
-        wallet.addCoinsReceivedEventListener(Threading.SAME_THREAD, new WalletCoinsReceivedEventListener() {
+        wallet.addCoinsReceivedEventListener(Threading.USER_THREAD, new WalletCoinsReceivedEventListener() {
             @Override
             public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                 synchronized (PaymentChannelClientState.this) {
@@ -189,8 +189,8 @@ public abstract class PaymentChannelClientState {
         // of this channel along with the refund tx from the wallet, because we're not going to need
         // any of that any more.
         final TransactionConfidence confidence = storedChannel.close.getConfidence();
-        int numConfirms = Context.get().getEventHorizon();
-        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
+        int numConfirms = wallet.getContext().getEventHorizon();
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.USER_THREAD);
         Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
             @Override
             public void onSuccess(TransactionConfidence result) {
