@@ -22,8 +22,6 @@ import org.bitcoinj.store.BlockStore;
 import org.bitcoinj.store.MemoryBlockStore;
 import org.bitcoinj.utils.BriefLogFormatter;
 import org.bitcoinj.wallet.Wallet;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -39,8 +37,6 @@ import static org.bitcoinj.testing.FakeTxBuilder.createFakeTx;
  * fee per kilobyte to zero in setUp.
  */
 public class TestWithWallet {
-    private static final Logger log = LoggerFactory.getLogger(TestWithWallet.class);
-
     protected static final NetworkParameters PARAMS = UnitTestParams.get();
     protected ECKey myKey;
     protected Address myAddress;

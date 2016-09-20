@@ -39,8 +39,7 @@ public class StoredServerChannel {
     byte[] bestValueSignature;
     long refundTransactionUnlockTimeSecs;
     Transaction contract;
-    @Nullable
-    Transaction close;
+    @Nullable Transaction close;
     TransactionOutput clientOutput;
     ECKey myKey;
     // Used in protocol v2 only
