@@ -16,6 +16,7 @@
 
 package org.bitcoinj.protocols.channels;
 
+import com.google.common.base.Throwables;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelClient.VersionSelector;
 import org.bitcoinj.store.MemoryBlockStore;
@@ -65,6 +66,8 @@ public class ChannelConnectionTest extends TestWithWallet {
     private static final Logger log = LoggerFactory.getLogger(ChannelConnectionTest.class);
 
     private static final int CLIENT_MAJOR_VERSION = 1;
+    final Context context = new Context(PARAMS, 3, Coin.ZERO, false); // Shorter event horizon for unit tests.
+
     private Wallet serverWallet;
     private AtomicBoolean fail;
     private BlockingQueue<Transaction> broadcasts;
@@ -118,7 +121,6 @@ public class ChannelConnectionTest extends TestWithWallet {
     @Before
     public void setUp() throws Exception {
         BriefLogFormatter.init();
-        final Context context = new Context(PARAMS, 3, Coin.ZERO, false); // Shorter event horizon for unit tests.
         Context.propagate(context);
 
         wallet = new Wallet(context);
@@ -135,7 +137,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, COIN);
         sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, COIN);
         wallet.addExtension(new StoredPaymentChannelClientStates(wallet, failBroadcaster));
-        serverWallet = new Wallet(PARAMS);
+        serverWallet = new Wallet(context);
         serverWallet.addExtension(new StoredPaymentChannelServerStates(serverWallet, failBroadcaster));
         serverWallet.freshReceiveKey();
         // Use an atomic boolean to indicate failure because fail()/assert*() dont work in network threads
@@ -499,8 +501,14 @@ public class ChannelConnectionTest extends TestWithWallet {
         pair.serverRecorder.checkNextMsg(MessageType.INITIATE);
 
         // Now reopen/resume the channel after round-tripping the wallets.
+        assertNotNull(wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID));
         wallet = roundTripClientWallet(wallet);
+        assertNotNull(wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID));
+
+        assertNotNull(serverWallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID));
         serverWallet = roundTripServerWallet(serverWallet);
+        assertNotNull(serverWallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID));
+
         clientStoredChannels =
                 (StoredPaymentChannelClientStates) wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
 
@@ -728,7 +736,7 @@ public class ChannelConnectionTest extends TestWithWallet {
                 .setType(MessageType.INITIATE).build());
         if (useRefunds()) {
             final Protos.TwoWayChannelMessage provideRefund = pair.clientRecorder.checkNextMsg(MessageType.PROVIDE_REFUND);
-            Transaction refund = new Transaction(PARAMS, provideRefund.getProvideRefund().getTx().toByteArray());
+            Transaction refund = new Transaction(context.getParams(), provideRefund.getProvideRefund().getTx().toByteArray());
             assertEquals(myValue, refund.getOutput(0).getValue());
         } else {
             assertEquals(2, client.state().getMajorVersion());
@@ -739,7 +747,9 @@ public class ChannelConnectionTest extends TestWithWallet {
 
     @Test //I
     public void testEmptyWallet() throws Exception {
-        Wallet emptyWallet = new Wallet(PARAMS);
+        Wallet emptyWallet = new Wallet(context);
+        emptyWallet.addExtension(new StoredPaymentChannelClientStates(emptyWallet, failBroadcaster));
+
         emptyWallet.freshReceiveKey();
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
         PaymentChannelServer server = pair.server;
@@ -916,6 +926,8 @@ public class ChannelConnectionTest extends TestWithWallet {
             server.connectionClosed();
         }
         // Now open a second channel and don't spend all of it/don't settle it.
+        Thread.sleep(1000);
+
         {
             Sha256Hash someServerId = Sha256Hash.ZERO_HASH;
             ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);

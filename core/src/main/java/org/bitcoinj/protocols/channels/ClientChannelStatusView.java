@@ -1,6 +1,9 @@
 package org.bitcoinj.protocols.channels;
 
-import org.bitcoinj.core.*;
+import org.bitcoinj.core.Coin;
+import org.bitcoinj.core.Sha256Hash;
+import org.bitcoinj.core.Transaction;
+import org.bitcoinj.core.TxConfidenceTable;
 
 /** Immutable view of a  known client channel read from a wallet.*/
 public class ClientChannelStatusView {
@@ -18,16 +21,14 @@ public class ClientChannelStatusView {
      *  The depth status of tx:s is requested using the confidence table.
      *  */
     ClientChannelStatusView(StoredClientChannel storedChannel, TxConfidenceTable table) {
-        synchronized (storedChannel) {
-            this.id = storedChannel.id;
-            this.contract = storedChannel.contract;
-            this.expiryTime = storedChannel.expiryTime;
-            this.close = storedChannel.close;
-            this.refund = storedChannel.refund;
-            this.valueToMe = storedChannel.valueToMe;
-            this.refundFees = storedChannel.refundFees;
-            this.active = storedChannel.active;
-        }
+        this.id = storedChannel.id;
+        this.contract = storedChannel.contract;
+        this.expiryTime = storedChannel.expiryTime;
+        this.close = storedChannel.close;
+        this.refund = storedChannel.refund;
+        this.valueToMe = storedChannel.valueToMe;
+        this.refundFees = storedChannel.refundFees;
+        this.active = storedChannel.active;
 
         contractDepth = contract.getConfidence(table).getDepthInBlocks();
         closeDepth = close != null ? close.getConfidence(table).getDepthInBlocks() : 0;

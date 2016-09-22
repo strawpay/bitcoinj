@@ -18,8 +18,10 @@ package org.bitcoinj.protocols.channels;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
+import org.bitcoinj.utils.Threading;
 
 import java.util.Locale;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -31,6 +33,7 @@ public class StateMachine<State extends Enum<State>> {
     private State currentState;
 
     private final Multimap<State, State> transitions;
+    private final ReentrantLock lock = Threading.lock("StateMachine");
 
     public StateMachine(State startState, Multimap<State, State> transitions) {
         currentState = checkNotNull(startState);
@@ -41,10 +44,15 @@ public class StateMachine<State extends Enum<State>> {
      * Checks that the machine is in the given state. Throws if it isn't.
      * @param requiredState
      */
-    public synchronized void checkState(State requiredState) throws IllegalStateException {
-        if (requiredState != currentState) {
-            throw new IllegalStateException(String.format(Locale.US,
-                    "Expected state %s, but in state %s", requiredState, currentState));
+    public void checkState(State requiredState) throws IllegalStateException {
+        lock.lock();
+        try {
+            if (requiredState != currentState) {
+                throw new IllegalStateException(String.format(Locale.US,
+                        "Expected state %s, but in state %s", requiredState, currentState));
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -52,14 +60,20 @@ public class StateMachine<State extends Enum<State>> {
      * Checks that the machine is in one of the given states. Throws if it isn't.
      * @param requiredStates
      */
-    public synchronized void checkState(State... requiredStates) throws IllegalStateException {
-        for (State requiredState : requiredStates) {
-            if (requiredState.equals(currentState)) {
-                return;
+    public void checkState(State... requiredStates) throws IllegalStateException {
+        lock.lock();
+
+        try {
+            for (State requiredState : requiredStates) {
+                if (requiredState.equals(currentState)) {
+                    return;
+                }
             }
+            throw new IllegalStateException(String.format(Locale.US,
+                    "Expected states %s, but in state %s", Lists.newArrayList(requiredStates), currentState));
+        } finally {
+            lock.unlock();
         }
-        throw new IllegalStateException(String.format(Locale.US,
-                "Expected states %s, but in state %s", Lists.newArrayList(requiredStates), currentState));
     }
 
     /**
@@ -67,17 +81,28 @@ public class StateMachine<State extends Enum<State>> {
      * @param newState
      * @throws IllegalStateException If no state transition exists from oldState to newState
      */
-    public synchronized void transition(State newState) throws IllegalStateException {
-        if (transitions.containsEntry(currentState, newState)) {
-            currentState = newState;
-        } else {
-            throw new IllegalStateException(String.format(Locale.US,
-                    "Attempted invalid transition from %s to %s", currentState, newState));
+    public void transition(State newState) throws IllegalStateException {
+        lock.lock();
+
+        try {
+            if (transitions.containsEntry(currentState, newState)) {
+                currentState = newState;
+            } else {
+                throw new IllegalStateException(String.format(Locale.US,
+                        "Attempted invalid transition from %s to %s", currentState, newState));
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
-    public synchronized State getState() {
-        return currentState;
+    public State getState() {
+        lock.lock();
+        try {
+            return currentState;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override

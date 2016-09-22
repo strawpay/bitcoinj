@@ -98,7 +98,9 @@ public abstract class PaymentChannelClientState {
     }
     protected final StateMachine<State> stateMachine;
 
-    final Wallet wallet;
+    protected final StoredPaymentChannelClientStates channels;
+    protected final Context context;
+    protected final Wallet wallet;
 
     // Both sides need a key (private in our case, public for the server) in order to manage the multisig contract
     // and transactions that spend it.
@@ -108,6 +110,9 @@ public abstract class PaymentChannelClientState {
     protected StoredClientChannel storedChannel;
 
     PaymentChannelClientState(StoredClientChannel storedClientChannel, Wallet wallet) throws VerificationException {
+        this.channels = (StoredPaymentChannelClientStates)
+                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+        this.context = wallet.getContext();
         this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(storedClientChannel.myKey);
@@ -148,6 +153,10 @@ public abstract class PaymentChannelClientState {
      */
     public PaymentChannelClientState(Wallet wallet, ECKey myKey, ECKey serverKey,
                                      Coin value, long expiryTimeInSeconds) throws VerificationException {
+        this.channels = (StoredPaymentChannelClientStates)
+                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+        this.context = wallet.getContext();
+
         this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
         this.wallet = checkNotNull(wallet);
         this.serverKey = checkNotNull(serverKey);
@@ -158,6 +167,8 @@ public abstract class PaymentChannelClientState {
     protected void initWalletListeners() {
         try {
             lock.lock();
+            channels.lock();
+
             // Register a listener that watches out for the server closing the channel.
             log.debug("initWalletListeners{}",
                     getContractInternal() == null ? "" : " for contract " + getContractInternal().getHashAsString());
@@ -172,8 +183,9 @@ public abstract class PaymentChannelClientState {
                 public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                     try {
                         lock.lock();
-                        log.debug("onCoinsReceived tx {}, storedChannel {}", tx.getHashAsString(), storedChannel);
+                        channels.lock();
 
+                        log.debug("onCoinsReceived tx {}, storedChannel {}", tx.getHashAsString(), storedChannel);
                         if (getContractInternal() == null) {
                             // no contract
                             log.debug("No contract");
@@ -191,11 +203,13 @@ public abstract class PaymentChannelClientState {
                             watchCloseConfirmations();
                         }
                     } finally {
+                        channels.unlock();
                         lock.unlock();
                     }
                 }
             });
         } finally {
+            channels.unlock();
             lock.unlock();
         }
     }
@@ -226,8 +240,6 @@ public abstract class PaymentChannelClientState {
             lock.lock();
 
             log.info("Close tx has confirmed, deleting channel from wallet: {}", storedChannel);
-            StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
-                    wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
             channels.removeChannel(storedChannel);
             storedChannel = null;
         } finally {
@@ -379,8 +391,6 @@ public abstract class PaymentChannelClientState {
             if (storedChannel == null)
                 return;
             storedChannel.valueToMe = getValueToMe();
-            StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
-                    wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
             channels.updatedChannel(storedChannel);
         } finally {
             lock.unlock();
@@ -396,13 +406,10 @@ public abstract class PaymentChannelClientState {
     public void disconnectFromChannel() {
         try {
             lock.lock();
-
-            if (storedChannel == null)
-                return;
-            synchronized (storedChannel) {
-                storedChannel.active = false;
-            }
+            channels.lock();
+            if (storedChannel != null) storedChannel.active = false;
         } finally {
+            channels.unlock();
             lock.unlock();
         }
     }
