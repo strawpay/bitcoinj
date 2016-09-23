@@ -53,15 +53,18 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
     // We currently also use the serverKey for payouts, but this is not required
     protected ECKey clientKey;
 
-    PaymentChannelV2ServerState(StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
+    PaymentChannelV2ServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         super(storedServerChannel, wallet, broadcaster);
-        synchronized (storedServerChannel) {
+        storedServerChannel.lock.lock();
+        try {
             this.clientKey = storedServerChannel.clientKey;
             if (storedServerChannel.close == null) {
                 stateMachine.transition(State.READY);
             } else {
                 stateMachine.transition(State.CLOSED);
             }
+        } finally {
+            storedServerChannel.lock.unlock();
         }
     }
 
@@ -221,7 +224,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
             } catch (InsufficientMoneyException e) {
                 throw e;  // Don't fall through.
             } catch (Exception e) {
-                log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "");
+                log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "", e);
                 throw new RuntimeException(e);  // Should never happen.
             }
             stateMachine.transition(State.CLOSING);

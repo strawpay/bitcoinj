@@ -128,6 +128,40 @@ public class Threading {
         }
     }
 
+    static private LinkedBlockingQueue<Runnable> takeAndHoldTasks = new LinkedBlockingQueue<Runnable>();
+    static private final Logger takeAndHoldLog = LoggerFactory.getLogger(UserThread.class);
+    static public void takeAndHold(final Object object) {
+        takeAndHoldTasks.offer(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (object) {
+                    takeAndHoldLog.info("exclude others to synchronize on object (use lock instead!): " + java.lang.System.identityHashCode(object));
+                    try {
+                        takeAndHoldTasks.take().run();
+                    } catch (InterruptedException ie) {
+                        throw new RuntimeException(ie);
+                    }
+                    throw new RuntimeException("Unexpected: unlocked monitor for object: " + java.lang.System.identityHashCode(object));
+                }
+            }
+        });
+    }
+    static {
+        new Thread("Take and Hold Monitors") {
+            { setDaemon(true); }
+
+            @Override
+            public void run() {
+                takeAndHoldLog.info("Starting thread: " + this);
+                try {
+                    takeAndHoldTasks.take().run();
+                } catch (InterruptedException ie) {
+                    throw new RuntimeException(ie);
+                }
+            }
+        }.start();
+    }
+
     static {
         // Default policy goes here. If you want to change this, use one of the static methods before
         // instantiating any bitcoinj objects. The policy change will take effect only on new objects

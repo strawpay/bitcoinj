@@ -110,43 +110,46 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * <p>Removes the given channel from this set of {@link StoredServerChannel}s and notifies the wallet of a change to
      * this wallet extension.</p>
      */
-    public void closeChannel(StoredServerChannel channel) {
-        log.debug("Synchronizing on channel {} (closeChannel) storedChannel.hashCode {}", channel.contract.getHashAsString(), channel.hashCode());
-        synchronized (channel) {
-            log.debug("Locked channel {}, storedChannel.hashCode {}", channel.contract.getHashAsString(), channel.hashCode());
+    public void closeChannel(final StoredServerChannel storedServerChannel) {
+        log.debug("Synchronizing on channel {} (closeChannel) storedChannel.hashCode {}", storedServerChannel.contract.getHashAsString(), storedServerChannel.hashCode());
+        storedServerChannel.lock.lock();
+        try {
+            log.debug("Locked channel {}, storedChannel.hashCode {}", storedServerChannel.contract.getHashAsString(), storedServerChannel.hashCode());
 
-            channel.closeConnectedHandler();
+            storedServerChannel.closeConnectedHandler();
             try {
                 TransactionBroadcaster broadcaster = getBroadcaster();
-                if (channel.close == null) {
-                    log.debug("Channel not closed yet {} ", channel.contract.getHash());
-                    PaymentChannelServerState state = channel.getOrCreateState(wallet, broadcaster);
+                if (storedServerChannel.close == null) {
+                    log.debug("Channel not closed yet {} ", storedServerChannel.contract.getHash());
+                    PaymentChannelServerState state = storedServerChannel.getOrCreateState(wallet, broadcaster);
                     state.close();
-                    channel.close = state.closeTx;
+                    storedServerChannel.close = state.closeTx;
                 } else {
-                    log.debug("Channel was already closed {} ", channel.contract.getHash());
-                    if (channel.close.getConfidence().getDepthInBlocks() == 0) {
-                        log.debug("Broadcasting unconfirmed close again {} ", channel.close.getHash());
-                        TransactionBroadcast tb = broadcaster.broadcastTransaction(channel.close);
+                    log.debug("Channel was already closed {} ", storedServerChannel.contract.getHash());
+                    if (storedServerChannel.close.getConfidence().getDepthInBlocks() == 0) {
+                        log.debug("Broadcasting unconfirmed close again {} ", storedServerChannel.close.getHash());
+                        TransactionBroadcast tb = broadcaster.broadcastTransaction(storedServerChannel.close);
                     }
                 }
 
                 // If channel already was closed or was closed now.
-                if (channel.close != null) {
-                    watchTxConfirmations(channel.contract.getHash(), channel.close);
+                if (storedServerChannel.close != null) {
+                    watchTxConfirmations(storedServerChannel.contract.getHash(), storedServerChannel.close);
                 }
 
                 // Check independent of other things if contract is settled somehow, remove channel later (when settle is deep in chain);.
-                checkIfSettled(channel.contract.getHash());
+                checkIfSettled(storedServerChannel.contract.getHash());
             } catch (InsufficientMoneyException e) {
                 log.error("Exception when closing channel", e);
-                removeChannel(channel.contract.getHash());
+                removeChannel(storedServerChannel.contract.getHash());
             } catch (VerificationException e) {
                 log.error("Exception when closing channel", e);
             }
-            channel.state = null;
+            storedServerChannel.state = null;
+        } finally {
+            storedServerChannel.lock.unlock();
         }
-        updatedChannel(channel);
+        updatedChannel(storedServerChannel);
     }
 
     private boolean checkIfSettled(final Sha256Hash contractHash) {

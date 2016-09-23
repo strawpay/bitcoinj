@@ -17,11 +17,13 @@
 package org.bitcoinj.protocols.channels;
 
 import org.bitcoinj.core.*;
+import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
 
 import javax.annotation.Nullable;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -31,6 +33,8 @@ import static com.google.common.base.Preconditions.checkArgument;
  * time approaches.
  */
 public class StoredServerChannel {
+    final ReentrantLock lock = Threading.lock("StoredServerChannel");
+
     /**
      * Channel version number. Currently can only be version 1
      */
@@ -62,40 +66,64 @@ public class StoredServerChannel {
         this.bestValueToMe = bestValueToMe;
         this.bestValueSignature = bestValueSignature;
         this.state = state;
+        Threading.takeAndHold(this);
     }
 
     /**
      * <p>Updates the best value to the server to the given newValue and newSignature without any checking.</p>
      * <p>Does <i>NOT</i> notify the wallet of an update to the {@link StoredPaymentChannelServerStates}.</p>
      */
-    synchronized void updateValueToMe(Coin newValue, byte[] newSignature) {
-        this.bestValueToMe = newValue;
-        this.bestValueSignature = newSignature;
+    void updateValueToMe(Coin newValue, byte[] newSignature) {
+        lock.lock();
+        try {
+            this.bestValueToMe = newValue;
+            this.bestValueSignature = newSignature;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * Attempts to connect the given handler to this, returning true if it is the new handler, false if there was
      * already one attached.
      */
-    synchronized PaymentChannelServer setConnectedHandler(PaymentChannelServer connectedHandler, boolean override) {
-        if (this.connectedHandler != null && !override)
-            return this.connectedHandler;
-        this.connectedHandler = connectedHandler;
-        return connectedHandler;
+    PaymentChannelServer setConnectedHandler(PaymentChannelServer connectedHandler, boolean override) {
+        lock.lock();
+
+        try {
+            if (this.connectedHandler != null && !override)
+                return this.connectedHandler;
+            this.connectedHandler = connectedHandler;
+            return connectedHandler;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /** Clears a handler that was connected with setConnectedHandler. */
-    synchronized void clearConnectedHandler() {
-        this.connectedHandler = null;
+    void clearConnectedHandler() {
+        lock.lock();
+
+        try {
+            this.connectedHandler = null;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * If a handler is connected, call its {@link org.bitcoinj.protocols.channels.PaymentChannelServer#close()}
      * method thus disconnecting the TCP connection.
      */
-    synchronized void closeConnectedHandler() {
-        if (connectedHandler != null)
+    void closeConnectedHandler() {
+        lock.lock();
+
+        try {
+            if (connectedHandler != null)
             connectedHandler.close();
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -106,37 +134,49 @@ public class StoredServerChannel {
      *               be used to complete transactions
      * @param broadcaster The {@link TransactionBroadcaster} which will be used to broadcast contract/payment transactions.
      */
-    public synchronized PaymentChannelServerState getOrCreateState(Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
-        if (state == null) {
-            switch (majorVersion) {
-                case 1:
-                    state = new PaymentChannelV1ServerState(this, wallet, broadcaster);
-                    break;
-                case 2:
-                    state = new PaymentChannelV2ServerState(this, wallet, broadcaster);
-                    break;
-                default:
-                    throw new IllegalStateException("Invalid version number found");
+    public PaymentChannelServerState getOrCreateState(Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
+        lock.lock();
+
+        try {
+            if (state == null) {
+                switch (majorVersion) {
+                    case 1:
+                        state = new PaymentChannelV1ServerState(this, wallet, broadcaster);
+                        break;
+                    case 2:
+                        state = new PaymentChannelV2ServerState(this, wallet, broadcaster);
+                        break;
+                    default:
+                        throw new IllegalStateException("Invalid version number found");
+                }
             }
+            checkArgument(wallet == state.wallet);
+            return state;
+        } finally {
+            lock.unlock();
         }
-        checkArgument(wallet == state.wallet);
-        return state;
     }
 
     @Override
-    public synchronized String toString() {
-        final String newline = String.format(Locale.US, "%n");
-        return String.format(Locale.US, "Stored server channel (%s)%n" +
-                "    Version:       %d%n" +
-                "    Key:           %s%n" +
-                "    Value to me:   %s%n" +
-                "    Client output: %s%n" +
-                "    Refund unlock: %s (%d unix time)%n" +
-                "    Contract:    %s%n" +
-                "    Close:    %s%n",
-                connectedHandler != null ? "connected" : "disconnected", majorVersion, myKey, bestValueToMe,
-                clientOutput,  new Date(refundTransactionUnlockTimeSecs * 1000), refundTransactionUnlockTimeSecs,
-                contract.toString().replaceAll(newline, newline + "    "),
-                close != null ? close.toString().replaceAll(newline, newline + "    ") : "");
+    public String toString() {
+        lock.lock();
+
+        try {
+            final String newline = String.format(Locale.US, "%n");
+            return String.format(Locale.US, "Stored server channel (%s)%n" +
+                            "    Version:       %d%n" +
+                            "    Key:           %s%n" +
+                            "    Value to me:   %s%n" +
+                            "    Client output: %s%n" +
+                            "    Refund unlock: %s (%d unix time)%n" +
+                            "    Contract:    %s%n" +
+                            "    Close:    %s%n",
+                    connectedHandler != null ? "connected" : "disconnected", majorVersion, myKey, bestValueToMe,
+                    clientOutput, new Date(refundTransactionUnlockTimeSecs * 1000), refundTransactionUnlockTimeSecs,
+                    contract.toString().replaceAll(newline, newline + "    "),
+                    close != null ? close.toString().replaceAll(newline, newline + "    ") : "");
+        } finally {
+            lock.unlock();
+        }
     }
 }

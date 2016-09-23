@@ -21,6 +21,7 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
+import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 
@@ -55,9 +56,10 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
     private TransactionOutput clientOutput;
     private long refundTransactionUnlockTimeSecs;
 
-    PaymentChannelV1ServerState(StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
+    PaymentChannelV1ServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         super(storedServerChannel, wallet, broadcaster);
-        synchronized (storedServerChannel) {
+        storedServerChannel.lock.lock();
+        try {
             this.clientKey = ECKey.fromPublicOnly(getContractScript().getChunks().get(1).data);
             this.clientOutput = checkNotNull(storedServerChannel.clientOutput);
             this.refundTransactionUnlockTimeSecs = storedServerChannel.refundTransactionUnlockTimeSecs;
@@ -66,6 +68,8 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
             } else {
                 stateMachine.transition(State.CLOSED);
             }
+        } finally {
+            storedServerChannel.lock.unlock();
         }
     }
 
@@ -259,7 +263,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
             } catch (InsufficientMoneyException e) {
                 throw e;  // Don't fall through.
             } catch (Exception e) {
-                log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "");
+                log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "", e);
                 throw new RuntimeException(e);  // Should never happen.
             }
             stateMachine.transition(State.CLOSING);

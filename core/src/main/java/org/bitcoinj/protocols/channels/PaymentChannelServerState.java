@@ -120,8 +120,9 @@ public abstract class PaymentChannelServerState {
     protected Transaction contract = null;
     protected Transaction closeTx = null;
 
-    PaymentChannelServerState(StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
-        synchronized (storedServerChannel) {
+    PaymentChannelServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
+        storedServerChannel.lock.lock();
+        try {
             this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
             this.wallet = checkNotNull(wallet);
             this.broadcaster = checkNotNull(broadcaster);
@@ -134,6 +135,8 @@ public abstract class PaymentChannelServerState {
             this.bestValueSignature = storedServerChannel.bestValueSignature;
             checkArgument(bestValueToMe.equals(Coin.ZERO) || bestValueSignature != null);
             storedServerChannel.state = this;
+        } finally {
+            storedServerChannel.lock.unlock();
         }
         log.debug("Constructed PaymentChannelServerState from StoredServerChannel {}", storedServerChannel);
     }
