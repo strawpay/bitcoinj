@@ -37,6 +37,7 @@ import org.spongycastle.crypto.params.KeyParameter;
 import javax.annotation.Nullable;
 
 import java.util.Arrays;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -92,6 +93,7 @@ public abstract class PaymentChannelServerState {
         CLOSED,
         ERROR,
     }
+    final ReentrantLock lock = Threading.lock("PaymentChannelServerState");
 
     protected StateMachine<State> stateMachine;
 
@@ -156,8 +158,13 @@ public abstract class PaymentChannelServerState {
 
     public abstract int getMajorVersion();
 
-    public synchronized State getState() {
-        return stateMachine.getState();
+    public State getState() {
+        lock.lock();
+        try {
+            return stateMachine.getState();
+        } finally {
+            lock.unlock();
+        }
     }
 
     protected abstract Multimap<State, State> getStateTransitions();
@@ -172,64 +179,78 @@ public abstract class PaymentChannelServerState {
      *         Note that if the network simply rejects the transaction, this future will never complete, a timeout should be used.
      * @throws VerificationException If the provided multisig contract is not well-formed or does not meet previously-specified parameters
      */
-    public synchronized ListenableFuture<PaymentChannelServerState> provideContract(final Transaction contract) throws VerificationException {
-        checkNotNull(contract);
-        stateMachine.checkState(State.WAITING_FOR_MULTISIG_CONTRACT);
+    public ListenableFuture<PaymentChannelServerState> provideContract(final Transaction contract) throws VerificationException {
+        lock.lock();
         try {
-            contract.verify();
-            this.contract = contract;
-            verifyContract(contract);
+            checkNotNull(contract);
 
-            // Check that contract's first output is a 2-of-2 multisig to the correct pubkeys in the correct order
-            final Script expectedScript = createOutputScript();
-            if (!Arrays.equals(getContractScript().getProgram(), expectedScript.getProgram()))
-                throw new VerificationException(getMajorVersion() == 1 ?
-                        "Contract's first output was not a standard 2-of-2 multisig to client and server in that order." :
-                        "Contract was not a P2SH script of a CLTV redeem script to client and server");
+            stateMachine.checkState(State.WAITING_FOR_MULTISIG_CONTRACT);
+            try {
+                contract.verify();
+                this.contract = contract;
+                verifyContract(contract);
 
-            if (getTotalValue().signum() <= 0)
-                throw new VerificationException("Not accepting an attempt to open a contract with zero value.");
-        } catch (VerificationException e) {
-            // We couldn't parse the multisig transaction or its output.
-            log.error("Provided multisig contract did not verify: {}", contract.toString());
-            throw e;
-        }
-        log.info("Broadcasting multisig contract: {}", contract);
-        wallet.addWatchedScripts(ImmutableList.of(contract.getOutput(0).getScriptPubKey()));
-        stateMachine.transition(State.WAITING_FOR_MULTISIG_ACCEPTANCE);
-        final SettableFuture<PaymentChannelServerState> future = SettableFuture.create();
-        Futures.addCallback(broadcaster.broadcastTransaction(contract).future(), new FutureCallback<Transaction>() {
-            @Override public void onSuccess(Transaction transaction) {
-                log.info("Successfully broadcast multisig contract {}. Channel now open.", transaction.getHashAsString());
-                try {
-                    // Manually add the contract to the wallet, overriding the isRelevant checks so we can track
-                    // it and check for double-spends later
-                    wallet.receivePending(contract, null, true);
-                } catch (VerificationException e) {
-                    throw new RuntimeException(e); // Cannot happen, we already called contract.verify()
+                // Check that contract's first output is a 2-of-2 multisig to the correct pubkeys in the correct order
+                final Script expectedScript = createOutputScript();
+                if (!Arrays.equals(getContractScript().getProgram(), expectedScript.getProgram()))
+                    throw new VerificationException(getMajorVersion() == 1 ?
+                            "Contract's first output was not a standard 2-of-2 multisig to client and server in that order." :
+                            "Contract was not a P2SH script of a CLTV redeem script to client and server");
+
+                if (getTotalValue().signum() <= 0)
+                    throw new VerificationException("Not accepting an attempt to open a contract with zero value.");
+            } catch (VerificationException e) {
+                // We couldn't parse the multisig transaction or its output.
+                log.error("Provided multisig contract did not verify: {}", contract.toString());
+                throw e;
+            }
+            log.info("Broadcasting multisig contract: {}", contract);
+            wallet.addWatchedScripts(ImmutableList.of(contract.getOutput(0).getScriptPubKey()));
+            stateMachine.transition(State.WAITING_FOR_MULTISIG_ACCEPTANCE);
+            final SettableFuture<PaymentChannelServerState> future = SettableFuture.create();
+            Futures.addCallback(broadcaster.broadcastTransaction(contract).future(), new FutureCallback<Transaction>() {
+                @Override
+                public void onSuccess(Transaction transaction) {
+                    log.info("Successfully broadcast multisig contract {}. Channel now open.", transaction.getHashAsString());
+                    try {
+                        // Manually add the contract to the wallet, overriding the isRelevant checks so we can track
+                        // it and check for double-spends later
+                        wallet.receivePending(contract, null, true);
+                    } catch (VerificationException e) {
+                        throw new RuntimeException(e); // Cannot happen, we already called contract.verify()
+                    }
+                    stateMachine.transition(State.READY);
+                    future.set(PaymentChannelServerState.this);
                 }
-                stateMachine.transition(State.READY);
-                future.set(PaymentChannelServerState.this);
-            }
 
-            @Override public void onFailure(Throwable throwable) {
-                // Couldn't broadcast the transaction for some reason.
-                log.error("Failed to broadcast contract", throwable);
-                stateMachine.transition(State.ERROR);
-                future.setException(throwable);
-            }
-        });
-        return future;
+                @Override
+                public void onFailure(Throwable throwable) {
+                    // Couldn't broadcast the transaction for some reason.
+                    log.error("Failed to broadcast contract", throwable);
+                    stateMachine.transition(State.ERROR);
+                    future.setException(throwable);
+                }
+            });
+            return future;
+        } finally {
+            lock.unlock();
+        }
     }
 
     // Create a payment transaction with valueToMe going back to us
-    protected synchronized SendRequest makeUnsignedChannelContract(Coin valueToMe) {
-        Transaction tx = new Transaction(wallet.getParams());
-        if (!getTotalValue().subtract(valueToMe).equals(Coin.ZERO)) {
-            tx.addOutput(getTotalValue().subtract(valueToMe), getClientKey().toAddress(wallet.getParams()));
+    protected SendRequest makeUnsignedChannelContract(Coin valueToMe) {
+        lock.lock();
+
+        try {
+            Transaction tx = new Transaction(wallet.getParams());
+            if (!getTotalValue().subtract(valueToMe).equals(Coin.ZERO)) {
+                tx.addOutput(getTotalValue().subtract(valueToMe), getClientKey().toAddress(wallet.getParams()));
+            }
+            tx.addInput(contract.getOutput(0));
+            return SendRequest.forTx(tx);
+        } finally {
+            lock.unlock();
         }
-        tx.addInput(contract.getOutput(0));
-        return SendRequest.forTx(tx);
     }
 
     /**
@@ -242,61 +263,66 @@ public abstract class PaymentChannelServerState {
      * @throws VerificationException If the signature does not verify or size is out of range (incl being rejected by the network as dust).
      * @return true if there is more value left on the channel, false if it is now fully used up.
      */
-    public synchronized boolean incrementPayment(Coin refundSize, byte[] signatureBytes) throws VerificationException, ValueOutOfRangeException, InsufficientMoneyException {
-        stateMachine.checkState(State.READY);
-        checkNotNull(refundSize);
-        checkNotNull(signatureBytes);
-        TransactionSignature signature = TransactionSignature.decodeFromBitcoin(signatureBytes, true);
-        // We allow snapping to zero for the payment amount because it's treated specially later, but not less than
-        // the dust level because that would prevent the transaction from being relayed/mined.
-        final boolean fullyUsedUp = refundSize.equals(Coin.ZERO);
-        Coin newValueToMe = getTotalValue().subtract(refundSize);
-        if (newValueToMe.signum() < 0)
-            throw new ValueOutOfRangeException("Attempt to refund more than the contract allows.");
-        if (newValueToMe.compareTo(bestValueToMe) < 0)
-            throw new ValueOutOfRangeException("Attempt to roll back payment on the channel.");
+    public boolean incrementPayment(Coin refundSize, byte[] signatureBytes) throws VerificationException, ValueOutOfRangeException, InsufficientMoneyException {
+        lock.lock();
+        try {
+            stateMachine.checkState(State.READY);
+            checkNotNull(refundSize);
+            checkNotNull(signatureBytes);
+            TransactionSignature signature = TransactionSignature.decodeFromBitcoin(signatureBytes, true);
+            // We allow snapping to zero for the payment amount because it's treated specially later, but not less than
+            // the dust level because that would prevent the transaction from being relayed/mined.
+            final boolean fullyUsedUp = refundSize.equals(Coin.ZERO);
+            Coin newValueToMe = getTotalValue().subtract(refundSize);
+            if (newValueToMe.signum() < 0)
+                throw new ValueOutOfRangeException("Attempt to refund more than the contract allows.");
+            if (newValueToMe.compareTo(bestValueToMe) < 0)
+                throw new ValueOutOfRangeException("Attempt to roll back payment on the channel.");
 
-        SendRequest req = makeUnsignedChannelContract(newValueToMe);
+            SendRequest req = makeUnsignedChannelContract(newValueToMe);
 
-        if (!fullyUsedUp && refundSize.isLessThan(req.tx.getOutput(0).getMinNonDustValue()))
-            throw new ValueOutOfRangeException("Attempt to refund negative value or value too small to be accepted by the network");
+            if (!fullyUsedUp && refundSize.isLessThan(req.tx.getOutput(0).getMinNonDustValue()))
+                throw new ValueOutOfRangeException("Attempt to refund negative value or value too small to be accepted by the network");
 
-        // Get the wallet's copy of the contract (ie with confidence information), if this is null, the wallet
-        // was not connected to the peergroup when the contract was broadcast (which may cause issues down the road, and
-        // disables our double-spend check next)
-        Transaction walletContract = wallet.getTransaction(contract.getHash());
-        checkNotNull(walletContract, "Wallet did not contain multisig contract {} after state was marked READY", contract.getHash());
+            // Get the wallet's copy of the contract (ie with confidence information), if this is null, the wallet
+            // was not connected to the peergroup when the contract was broadcast (which may cause issues down the road, and
+            // disables our double-spend check next)
+            Transaction walletContract = wallet.getTransaction(contract.getHash());
+            checkNotNull(walletContract, "Wallet did not contain multisig contract {} after state was marked READY", contract.getHash());
 
-        // Note that we check for DEAD state here, but this test is essentially useless in production because we will
-        // miss most double-spends due to bloom filtering right now anyway. This will eventually fixed by network-wide
-        // double-spend notifications, so we just wait instead of attempting to add all dependant outpoints to our bloom
-        // filters (and probably missing lots of edge-cases).
-        if (walletContract.getConfidence().getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
-            close();
-            throw new VerificationException("Multisig contract was double-spent");
+            // Note that we check for DEAD state here, but this test is essentially useless in production because we will
+            // miss most double-spends due to bloom filtering right now anyway. This will eventually fixed by network-wide
+            // double-spend notifications, so we just wait instead of attempting to add all dependant outpoints to our bloom
+            // filters (and probably missing lots of edge-cases).
+            if (walletContract.getConfidence().getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
+                close();
+                throw new VerificationException("Multisig contract was double-spent");
+            }
+
+            Transaction.SigHash mode;
+            // If the client doesn't want anything back, they shouldn't sign any outputs at all.
+            if (fullyUsedUp)
+                mode = Transaction.SigHash.NONE;
+            else
+                mode = Transaction.SigHash.SINGLE;
+
+            if (signature.sigHashMode() != mode || !signature.anyoneCanPay())
+                throw new VerificationException("New payment signature was not signed with the right SIGHASH flags.");
+
+            // Now check the signature is correct.
+            // Note that the client must sign with SIGHASH_{SINGLE/NONE} | SIGHASH_ANYONECANPAY to allow us to add additional
+            // inputs (in case we need to add significant fee, or something...) and any outputs we want to pay to.
+            Sha256Hash sighash = req.tx.hashForSignature(0, getSignedScript(), mode, true);
+
+            if (!getClientKey().verify(sighash, signature))
+                throw new VerificationException("Signature does not verify on tx\n" + req.tx);
+            bestValueToMe = newValueToMe;
+            bestValueSignature = signatureBytes;
+            updateChannelInWallet();
+            return !fullyUsedUp;
+        } finally {
+            lock.unlock();
         }
-
-        Transaction.SigHash mode;
-        // If the client doesn't want anything back, they shouldn't sign any outputs at all.
-        if (fullyUsedUp)
-            mode = Transaction.SigHash.NONE;
-        else
-            mode = Transaction.SigHash.SINGLE;
-
-        if (signature.sigHashMode() != mode || !signature.anyoneCanPay())
-            throw new VerificationException("New payment signature was not signed with the right SIGHASH flags.");
-
-        // Now check the signature is correct.
-        // Note that the client must sign with SIGHASH_{SINGLE/NONE} | SIGHASH_ANYONECANPAY to allow us to add additional
-        // inputs (in case we need to add significant fee, or something...) and any outputs we want to pay to.
-        Sha256Hash sighash = req.tx.hashForSignature(0, getSignedScript(), mode, true);
-
-        if (!getClientKey().verify(sighash, signature))
-            throw new VerificationException("Signature does not verify on tx\n" + req.tx);
-        bestValueToMe = newValueToMe;
-        bestValueSignature = signatureBytes;
-        updateChannelInWallet();
-        return !fullyUsedUp;
     }
 
     /**
@@ -325,8 +351,13 @@ public abstract class PaymentChannelServerState {
     /**
      * Gets the highest payment to ourselves (which we will receive on settle(), not including fees)
      */
-    public synchronized Coin getBestValueToMe() {
-        return bestValueToMe;
+    public Coin getBestValueToMe() {
+        lock.lock();
+        try {
+            return bestValueToMe;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -337,21 +368,31 @@ public abstract class PaymentChannelServerState {
     /**
      * Gets the multisig contract which was used to initialize this channel
      */
-    public synchronized Transaction getContract() {
-        checkState(contract != null);
-        return contract;
+    public Transaction getContract() {
+        lock.lock();
+        try {
+            checkState(contract != null);
+            return contract;
+        } finally {
+            lock.unlock();
+        }
     }
 
     public long getExpiryTime() {
         return minExpireTime;
     }
 
-    protected synchronized void updateChannelInWallet() {
-        if (storedServerChannel != null) {
-            storedServerChannel.updateValueToMe(bestValueToMe, bestValueSignature);
-            StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                    wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
-            channels.updatedChannel(storedServerChannel);
+    protected void updateChannelInWallet() {
+        lock.lock();
+        try {
+            if (storedServerChannel != null) {
+                storedServerChannel.updateValueToMe(bestValueToMe, bestValueSignature);
+                StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
+                        wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
+                channels.updatedChannel(storedServerChannel);
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -366,23 +407,29 @@ public abstract class PaymentChannelServerState {
      *                         committed to wallet. If set, closing the state object will propagate the close to the
      *                         handler which can then do a TCP disconnect.
      */
-    public synchronized void storeChannelInWallet(@Nullable PaymentChannelServer connectedHandler) {
-        stateMachine.checkState(State.READY);
-        if (storedServerChannel != null)
-            return;
+    public void storeChannelInWallet(@Nullable PaymentChannelServer connectedHandler) {
+        lock.lock();
+        try {
+            stateMachine.checkState(State.READY);
+            if (storedServerChannel != null)
+                return;
 
-        log.info("Storing state with contract hash {}.", getContract().getHash());
-        StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                wallet.addOrGetExistingExtension(new StoredPaymentChannelServerStates(wallet, broadcaster));
-        storedServerChannel = new StoredServerChannel(this, getMajorVersion(), getContract(), getClientOutput(), null, getExpiryTime(), serverKey, getClientKey(), bestValueToMe, bestValueSignature);
-        if (connectedHandler != null)
-            checkState(storedServerChannel.setConnectedHandler(connectedHandler, false) == connectedHandler);
-        channels.putChannel(storedServerChannel);
+            log.info("Storing state with contract hash {}.", getContract().getHash());
+            StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
+                    wallet.addOrGetExistingExtension(new StoredPaymentChannelServerStates(wallet, broadcaster));
+            storedServerChannel = new StoredServerChannel(this, getMajorVersion(), getContract(), getClientOutput(), null, getExpiryTime(), serverKey, getClientKey(), bestValueToMe, bestValueSignature);
+            if (connectedHandler != null)
+                checkState(storedServerChannel.setConnectedHandler(connectedHandler, false) == connectedHandler);
+            channels.putChannel(storedServerChannel);
+        } finally {
+            lock.unlock();
+        }
     }
 
     public abstract TransactionOutput getClientOutput();
 
     public Script getContractScript() {
+        // TODO locking?
         if (contract == null) {
             return null;
         }

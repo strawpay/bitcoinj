@@ -125,40 +125,45 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      * @return Our signature that makes the refund transaction valid
      * @throws VerificationException If the transaction isnt valid or did not meet the requirements of a refund transaction.
      */
-    public synchronized byte[] provideRefundTransaction(Transaction refundTx, byte[] clientMultiSigPubKey) throws VerificationException {
-        checkNotNull(refundTx);
-        checkNotNull(clientMultiSigPubKey);
-        stateMachine.checkState(State.WAITING_FOR_REFUND_TRANSACTION);
-        log.info("Provided with refund transaction: {}", refundTx);
-        // Do a few very basic syntax sanity checks.
-        refundTx.verify();
-        // Verify that the refund transaction has a single input (that we can fill to sign the multisig output).
-        if (refundTx.getInputs().size() != 1)
-            throw new VerificationException("Refund transaction does not have exactly one input");
-        // Verify that the refund transaction has a time lock on it and a sequence number that does not disable lock time.
-        if (refundTx.getInput(0).getSequenceNumber() == TransactionInput.NO_SEQUENCE)
-            throw new VerificationException("Refund transaction's input's sequence number disables lock time");
-        if (refundTx.getLockTime() < minExpireTime)
-            throw new VerificationException("Refund transaction has a lock time too soon");
-        // Verify the transaction has one output (we don't care about its contents, its up to the client)
-        // Note that because we sign with SIGHASH_NONE|SIGHASH_ANYOENCANPAY the client can later add more outputs and
-        // inputs, but we will need only one output later to create the paying transactions
-        if (refundTx.getOutputs().size() != 1)
-            throw new VerificationException("Refund transaction does not have exactly one output");
+    public byte[] provideRefundTransaction(Transaction refundTx, byte[] clientMultiSigPubKey) throws VerificationException {
+        lock.lock();
+        try {
+            checkNotNull(refundTx);
+            checkNotNull(clientMultiSigPubKey);
+            stateMachine.checkState(State.WAITING_FOR_REFUND_TRANSACTION);
+            log.info("Provided with refund transaction: {}", refundTx);
+            // Do a few very basic syntax sanity checks.
+            refundTx.verify();
+            // Verify that the refund transaction has a single input (that we can fill to sign the multisig output).
+            if (refundTx.getInputs().size() != 1)
+                throw new VerificationException("Refund transaction does not have exactly one input");
+            // Verify that the refund transaction has a time lock on it and a sequence number that does not disable lock time.
+            if (refundTx.getInput(0).getSequenceNumber() == TransactionInput.NO_SEQUENCE)
+                throw new VerificationException("Refund transaction's input's sequence number disables lock time");
+            if (refundTx.getLockTime() < minExpireTime)
+                throw new VerificationException("Refund transaction has a lock time too soon");
+            // Verify the transaction has one output (we don't care about its contents, its up to the client)
+            // Note that because we sign with SIGHASH_NONE|SIGHASH_ANYOENCANPAY the client can later add more outputs and
+            // inputs, but we will need only one output later to create the paying transactions
+            if (refundTx.getOutputs().size() != 1)
+                throw new VerificationException("Refund transaction does not have exactly one output");
 
-        refundTransactionUnlockTimeSecs = refundTx.getLockTime();
+            refundTransactionUnlockTimeSecs = refundTx.getLockTime();
 
-        // Sign the refund tx with the scriptPubKey and return the signature. We don't have the spending transaction
-        // so do the steps individually.
-        clientKey = ECKey.fromPublicOnly(clientMultiSigPubKey);
-        Script multisigPubKey = ScriptBuilder.createMultiSigOutputScript(2, ImmutableList.of(clientKey, serverKey));
-        // We are really only signing the fact that the transaction has a proper lock time and don't care about anything
-        // else, so we sign SIGHASH_NONE and SIGHASH_ANYONECANPAY.
-        TransactionSignature sig = refundTx.calculateSignature(0, serverKey, multisigPubKey, Transaction.SigHash.NONE, true);
-        log.info("Signed refund transaction.");
-        this.clientOutput = refundTx.getOutput(0);
-        stateMachine.transition(State.WAITING_FOR_MULTISIG_CONTRACT);
-        return sig.encodeToBitcoin();
+            // Sign the refund tx with the scriptPubKey and return the signature. We don't have the spending transaction
+            // so do the steps individually.
+            clientKey = ECKey.fromPublicOnly(clientMultiSigPubKey);
+            Script multisigPubKey = ScriptBuilder.createMultiSigOutputScript(2, ImmutableList.of(clientKey, serverKey));
+            // We are really only signing the fact that the transaction has a proper lock time and don't care about anything
+            // else, so we sign SIGHASH_NONE and SIGHASH_ANYONECANPAY.
+            TransactionSignature sig = refundTx.calculateSignature(0, serverKey, multisigPubKey, Transaction.SigHash.NONE, true);
+            log.info("Signed refund transaction.");
+            this.clientOutput = refundTx.getOutput(0);
+            stateMachine.transition(State.WAITING_FOR_MULTISIG_CONTRACT);
+            return sig.encodeToBitcoin();
+        } finally {
+            lock.unlock();
+        }
     }
 
     protected Script createOutputScript() {
@@ -196,103 +201,120 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      * @throws InsufficientMoneyException If the payment tx would have cost more in fees to spend than it is worth.
      */
     @Override
-    public synchronized ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
-        if (closeTx != null) {
-            log.info("close() called on already closed contract {} with close tx {}", contract, closeTx);
-            return closedFuture;
-        }
-
-        if (storedServerChannel != null) {
-            StoredServerChannel temp = storedServerChannel;
-            storedServerChannel = null;
-            StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                    wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
-            channels.closeChannel(temp); // May call this method again for us (if it wasn't the original caller)
-            if (getState().compareTo(State.CLOSING) >= 0)
-                return closedFuture;
-        }
-
-        if (getState().ordinal() < State.READY.ordinal()) {
-            log.error("Attempt to settle channel in state " + getState());
-            stateMachine.transition(State.CLOSED);
-            closedFuture.set(null);
-            return closedFuture;
-        }
-        if (getState() != State.READY) {
-            // TODO: What is this codepath for?
-            log.warn("Failed attempt to settle a channel in state " + getState());
-            return closedFuture;
-        }
-        Transaction tx = null;
+    public ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
+        lock.lock();
         try {
-            SendRequest req = makeUnsignedChannelContract(bestValueToMe);
-            tx = req.tx;
-            // Provide a throwaway signature so that completeTx won't complain out about unsigned inputs it doesn't
-            // know how to sign. Note that this signature does actually have to be valid, so we can't use a dummy
-            // signature to save time, because otherwise completeTx will try to re-sign it to make it valid and then
-            // die. We could probably add features to the SendRequest API to make this a bit more efficient.
-            signMultisigInput(tx, Transaction.SigHash.NONE, true, userKey);
-            // Let wallet handle adding additional inputs/fee as necessary.
-            req.shuffleOutputs = false;
-            req.missingSigsMode = Wallet.MissingSigsMode.USE_DUMMY_SIG;
-            wallet.completeTx(req);  // TODO: Fix things so shuffling is usable.
-            feePaidForPayment = req.tx.getFee();
-            log.info("Calculated fee is {}", feePaidForPayment);
-            if (feePaidForPayment.compareTo(bestValueToMe) > 0) {
-                final String msg = String.format(Locale.US, "Had to pay more in fees (%s) than the channel was worth (%s)",
-                        feePaidForPayment, bestValueToMe);
-                throw new InsufficientMoneyException(feePaidForPayment.subtract(bestValueToMe), msg);
+            if (closeTx != null) {
+                log.info("close() called on already closed contract {} with close tx {}", contract, closeTx);
+                return closedFuture;
             }
-            // Now really sign the multisig input.
-            signMultisigInput(tx, Transaction.SigHash.ALL, false, userKey);
-            // Some checks that shouldn't be necessary but it can't hurt to check.
-            tx.verify();  // Sanity check syntax.
-            for (TransactionInput input : tx.getInputs())
-                input.verify();  // Run scripts and ensure it is valid.
-        } catch (InsufficientMoneyException e) {
-            throw e;  // Don't fall through.
-        } catch (Exception e) {
-            log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "");
-            throw new RuntimeException(e);  // Should never happen.
-        }
-        stateMachine.transition(State.CLOSING);
 
-        closeTx = tx;
-        log.info("Closing channel, broadcasting tx {}", closeTx);
-        // The act of broadcasting the transaction will add it to the wallet.
-        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
+            if (storedServerChannel != null) {
+                StoredServerChannel temp = storedServerChannel;
+                storedServerChannel = null;
+                StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
+                        wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
+                channels.closeChannel(temp); // May call this method again for us (if it wasn't the original caller)
+                if (getState().compareTo(State.CLOSING) >= 0)
+                    return closedFuture;
+            }
 
-        Futures.addCallback(future, new FutureCallback<Transaction>() {
-            @Override public void onSuccess(Transaction transaction) {
-                log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
+            if (getState().ordinal() < State.READY.ordinal()) {
+                log.error("Attempt to settle channel in state " + getState());
                 stateMachine.transition(State.CLOSED);
-                closedFuture.set(transaction);
+                closedFuture.set(null);
+                return closedFuture;
             }
+            if (getState() != State.READY) {
+                // TODO: What is this codepath for?
+                log.warn("Failed attempt to settle a channel in state " + getState());
+                return closedFuture;
+            }
+            Transaction tx = null;
+            try {
+                SendRequest req = makeUnsignedChannelContract(bestValueToMe);
+                tx = req.tx;
+                // Provide a throwaway signature so that completeTx won't complain out about unsigned inputs it doesn't
+                // know how to sign. Note that this signature does actually have to be valid, so we can't use a dummy
+                // signature to save time, because otherwise completeTx will try to re-sign it to make it valid and then
+                // die. We could probably add features to the SendRequest API to make this a bit more efficient.
+                signMultisigInput(tx, Transaction.SigHash.NONE, true, userKey);
+                // Let wallet handle adding additional inputs/fee as necessary.
+                req.shuffleOutputs = false;
+                req.missingSigsMode = Wallet.MissingSigsMode.USE_DUMMY_SIG;
+                wallet.completeTx(req);  // TODO: Fix things so shuffling is usable.
+                feePaidForPayment = req.tx.getFee();
+                log.info("Calculated fee is {}", feePaidForPayment);
+                if (feePaidForPayment.compareTo(bestValueToMe) > 0) {
+                    final String msg = String.format(Locale.US, "Had to pay more in fees (%s) than the channel was worth (%s)",
+                            feePaidForPayment, bestValueToMe);
+                    throw new InsufficientMoneyException(feePaidForPayment.subtract(bestValueToMe), msg);
+                }
+                // Now really sign the multisig input.
+                signMultisigInput(tx, Transaction.SigHash.ALL, false, userKey);
+                // Some checks that shouldn't be necessary but it can't hurt to check.
+                tx.verify();  // Sanity check syntax.
+                for (TransactionInput input : tx.getInputs())
+                    input.verify();  // Run scripts and ensure it is valid.
+            } catch (InsufficientMoneyException e) {
+                throw e;  // Don't fall through.
+            } catch (Exception e) {
+                log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "");
+                throw new RuntimeException(e);  // Should never happen.
+            }
+            stateMachine.transition(State.CLOSING);
 
-            @Override public void onFailure(Throwable throwable) {
-                log.error("Failed to settle channel, could not broadcast: {}", throwable);
-                stateMachine.transition(State.ERROR);
-                closedFuture.setException(throwable);
-            }
-        });
-        return closedFuture;
+            closeTx = tx;
+            log.info("Closing channel, broadcasting tx {}", closeTx);
+            // The act of broadcasting the transaction will add it to the wallet.
+            ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
+
+            Futures.addCallback(future, new FutureCallback<Transaction>() {
+                @Override
+                public void onSuccess(Transaction transaction) {
+                    log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
+                    stateMachine.transition(State.CLOSED);
+                    closedFuture.set(transaction);
+                }
+
+                @Override
+                public void onFailure(Throwable throwable) {
+                    log.error("Failed to settle channel, could not broadcast: {}", throwable);
+                    stateMachine.transition(State.ERROR);
+                    closedFuture.setException(throwable);
+                }
+            });
+            return closedFuture;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * Gets the fee paid in the final payment transaction (only available if settle() did not throw an exception)
      */
     @Override
-    public synchronized Coin getFeePaid() {
-        stateMachine.checkState(State.CLOSED, State.CLOSING);
-        return feePaidForPayment;
+    public Coin getFeePaid() {
+        lock.lock();
+        try {
+            stateMachine.checkState(State.CLOSED, State.CLOSING);
+            return feePaidForPayment;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * Gets the client's refund transaction which they can spend to get the entire channel value back if it reaches its
      * lock time.
      */
-    public synchronized long getRefundTransactionUnlockTime() {
-        checkState(getState().compareTo(State.WAITING_FOR_MULTISIG_CONTRACT) > 0 && getState() != State.ERROR);
-        return refundTransactionUnlockTimeSecs;
+    public long getRefundTransactionUnlockTime() {
+        lock.lock();
+        try {
+            checkState(getState().compareTo(State.WAITING_FOR_MULTISIG_CONTRACT) > 0 && getState() != State.ERROR);
+            return refundTransactionUnlockTimeSecs;
+        } finally {
+            lock.unlock();
+        }
     }
 }

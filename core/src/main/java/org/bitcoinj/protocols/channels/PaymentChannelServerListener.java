@@ -23,6 +23,7 @@ import org.bitcoinj.core.TransactionBroadcaster;
 import org.bitcoinj.net.NioServer;
 import org.bitcoinj.net.ProtobufConnection;
 import org.bitcoinj.net.StreamConnectionFactory;
+import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
 
 import com.google.common.util.concurrent.ListenableFuture;
@@ -36,6 +37,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkNotNull;
 
@@ -98,30 +100,48 @@ public class PaymentChannelServerListener {
             });
 
             protobufHandlerListener = new ProtobufConnection.Listener<Protos.TwoWayChannelMessage>() {
+
+                private final ReentrantLock lock = Threading.lock("ProtobufConnection.Listener");
+
                 @Override
-                public synchronized void messageReceived(ProtobufConnection<Protos.TwoWayChannelMessage> handler, Protos.TwoWayChannelMessage msg) {
-                    paymentChannelManager.receiveMessage(msg);
+                public void messageReceived(ProtobufConnection<Protos.TwoWayChannelMessage> handler, Protos.TwoWayChannelMessage msg) {
+                    lock.lock();
+                    try {
+                        paymentChannelManager.receiveMessage(msg);
+                    } finally {
+                        lock.unlock();
+                    }
                 }
 
                 @Override
-                public synchronized void connectionClosed(ProtobufConnection<Protos.TwoWayChannelMessage> handler) {
-                    paymentChannelManager.connectionClosed();
-                    if (closeReason != null)
-                        eventHandler.channelClosed(closeReason);
-                    else
-                        eventHandler.channelClosed(PaymentChannelCloseException.CloseReason.CONNECTION_CLOSED);
-                    eventHandler.setConnectionChannel(null);
+                public void connectionClosed(ProtobufConnection<Protos.TwoWayChannelMessage> handler) {
+                    lock.lock();
+                    try {
+                        paymentChannelManager.connectionClosed();
+                        if (closeReason != null)
+                            eventHandler.channelClosed(closeReason);
+                        else
+                            eventHandler.channelClosed(PaymentChannelCloseException.CloseReason.CONNECTION_CLOSED);
+                        eventHandler.setConnectionChannel(null);
+                    } finally {
+                        lock.unlock();
+                    }
                 }
 
                 @Override
-                public synchronized void connectionOpen(ProtobufConnection<Protos.TwoWayChannelMessage> handler) {
-                    ServerConnectionEventHandler eventHandler = eventHandlerFactory.onNewConnection(address);
-                    if (eventHandler == null)
-                        handler.closeConnection();
-                    else {
-                        ServerHandler.this.eventHandler = eventHandler;
-                        ServerHandler.this.eventHandler.setConnectionChannel(socketProtobufHandler);
-                        paymentChannelManager.connectionOpen();
+                public void connectionOpen(ProtobufConnection<Protos.TwoWayChannelMessage> handler) {
+                    lock.lock();
+                    try {
+                        ServerConnectionEventHandler eventHandler = eventHandlerFactory.onNewConnection(address);
+                        if (eventHandler == null)
+                            handler.closeConnection();
+                        else {
+                            ServerHandler.this.eventHandler = eventHandler;
+                            ServerHandler.this.eventHandler.setConnectionChannel(socketProtobufHandler);
+                            paymentChannelManager.connectionOpen();
+                        }
+                    } finally {
+                        lock.unlock();
                     }
                 }
             };
