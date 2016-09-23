@@ -184,7 +184,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         exectuteSimpleChannelTest(null);
     }
 
-    @Test //I
+    @Test
     public void testEncryptedClientWallet() throws Exception {
         // Encrypt the client wallet
         String mySecretPw = "MySecret";
@@ -316,7 +316,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(0, StoredPaymentChannelClientStates.getFromWallet(wallet).getChannelMap().size());
     }
 
-    @Test //I
+    @Test
     public void testServerErrorHandling_badTransaction() throws Exception {
         if (!useRefunds()) {
             // This test only applies to versions with refunds
@@ -345,7 +345,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(Protos.Error.ErrorCode.BAD_TRANSACTION, errorMsg.getError().getCode());
     }
 
-    @Test //I
+    @Test
     public void testServerErrorHandling_killSocketOnClose() throws Exception {
         // Make sure the server closes the socket on CLOSE
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
@@ -364,7 +364,7 @@ public class ChannelConnectionTest extends TestWithWallet {
     }
 
 
-    @Test //I
+    @Test
     public void testServerErrorHandling_killSocketOnError() throws Exception {
         // Make sure the server closes the socket on ERROR
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
@@ -382,7 +382,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(CloseReason.REMOTE_SENT_ERROR, pair.serverRecorder.q.take());
     }
 
-    @Test //I
+    @Test
     public void testClientErrorHandlingIncreasePaymentError() throws Exception {
         // Tests various aspects of channel resuming.
         Utils.setMockClock();
@@ -629,7 +629,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         return new WalletProtobufSerializer().readWallet(wallet.getParams(), new WalletExtension[] { state }, proto);
     }
 
-    @Test //I
+    @Test
     public void testBadResumeHash() throws InterruptedException {
         // Check that server-side will reject incorrectly formatted hashes. If anything goes wrong with session resume,
         // then the server will start the opening of a new channel automatically, so we expect to see INITIATE here.
@@ -648,7 +648,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertTrue(srv.serverRecorder.q.isEmpty());
     }
 
-    @Test //I
+    @Test
     public void testClientUnknownVersion() throws Exception {
         // Tests client rejects unknown version
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
@@ -667,7 +667,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         } catch (IllegalStateException e) { }
     }
 
-    @Test //I
+    @Test
     public void testClientTimeWindowUnacceptable() throws Exception {
         // Tests that clients reject too large time windows
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster, 100);
@@ -693,7 +693,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         } catch (IllegalStateException e) { }
     }
 
-    @Test //I
+    @Test
     public void testValuesAreRespected() throws Exception {
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
         PaymentChannelServer server = pair.server;
@@ -745,7 +745,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         }
     }
 
-    @Test //I
+    @Test
     public void testEmptyWallet() throws Exception {
         Wallet emptyWallet = new Wallet(context);
         emptyWallet.addExtension(new StoredPaymentChannelClientStates(emptyWallet, failBroadcaster));
@@ -771,7 +771,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         }
     }
 
-    @Test //I
+    @Test
     public void testClientRefusesNonCanonicalKey() throws Exception {
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
         PaymentChannelServer server = pair.server;
@@ -789,7 +789,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(CloseReason.REMOTE_SENT_INVALID_MESSAGE, pair.clientRecorder.q.take());
     }
 
-    @Test //I
+    @Test
     public void testClientResumeNothing() throws Exception {
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
         PaymentChannelServer server = pair.server;
@@ -804,7 +804,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(CloseReason.REMOTE_SENT_INVALID_MESSAGE, pair.clientRecorder.q.take());
     }
 
-    @Test //I
+    @Test
     public void testClientRandomMessage() throws Exception {
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
         PaymentChannelClient client = new PaymentChannelClient(wallet, myKey, COIN, Sha256Hash.ZERO_HASH, null, clientChannelProperties, pair.clientRecorder);
@@ -819,7 +819,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(CloseReason.REMOTE_SENT_INVALID_MESSAGE, pair.clientRecorder.q.take());
    }
 
-    @Test //I
+    @Test
     public void testDontResumeEmptyChannels() throws Exception {
         // Check that if the client has an empty channel that's being kept around in case we need to broadcast the
         // refund, we don't accidentally try to resume it).
@@ -867,7 +867,7 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertFalse(msg.getClientVersion().hasPreviousChannelContractHash());
     }
 
-    @Test //I
+    @Test
     public void repeatedChannels() throws Exception {
         // Ensures we're selecting channels correctly. Covers a bug in which we'd always try and fail to resume
         // the first channel due to lack of proper closing behaviour.
