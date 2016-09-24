@@ -16,7 +16,13 @@
 
 package org.bitcoinj.protocols.channels;
 
-import com.google.common.collect.*;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.MultimapBuilder;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
 import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.script.Script;
@@ -24,11 +30,6 @@ import org.bitcoinj.script.ScriptBuilder;
 import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
-
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
@@ -36,7 +37,8 @@ import org.spongycastle.crypto.params.KeyParameter;
 import javax.annotation.Nullable;
 import java.util.Locale;
 
-import static com.google.common.base.Preconditions.*;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
 /**
  * Version 1 of the payment channel server state object. Common functionality is
@@ -58,18 +60,13 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
 
     PaymentChannelV1ServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         super(storedServerChannel, wallet, broadcaster);
-        storedServerChannel.lock.lock();
-        try {
-            this.clientKey = ECKey.fromPublicOnly(getContractScript().getChunks().get(1).data);
-            this.clientOutput = checkNotNull(storedServerChannel.clientOutput);
-            this.refundTransactionUnlockTimeSecs = storedServerChannel.refundTransactionUnlockTimeSecs;
-            if (storedServerChannel.close == null) {
-                stateMachine.transition(State.READY);
-            } else {
-                stateMachine.transition(State.CLOSED);
-            }
-        } finally {
-            storedServerChannel.lock.unlock();
+        this.clientKey = ECKey.fromPublicOnly(getContractScript().getChunks().get(1).data);
+        this.clientOutput = checkNotNull(storedServerChannel.clientOutput);
+        this.refundTransactionUnlockTimeSecs = storedServerChannel.refundTransactionUnlockTimeSecs;
+        if (storedServerChannel.close == null) {
+            stateMachine.transition(State.READY);
+        } else {
+            stateMachine.transition(State.CLOSED);
         }
     }
 
@@ -130,7 +127,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      * @throws VerificationException If the transaction isnt valid or did not meet the requirements of a refund transaction.
      */
     public byte[] provideRefundTransaction(Transaction refundTx, byte[] clientMultiSigPubKey) throws VerificationException {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             checkNotNull(refundTx);
             checkNotNull(clientMultiSigPubKey);
@@ -206,7 +203,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      */
     @Override
     public ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
-        lock.lock();
+        lock();
         try {
             if (closeTx != null) {
                 log.info("close() called on already closed contract {} with close tx {}", contract, closeTx);
@@ -290,7 +287,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
             });
             return closedFuture;
         } finally {
-            lock.unlock();
+            unlock();
         }
     }
 
@@ -299,7 +296,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      */
     @Override
     public Coin getFeePaid() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             stateMachine.checkState(State.CLOSED, State.CLOSING);
             return feePaidForPayment;
@@ -313,7 +310,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      * lock time.
      */
     public long getRefundTransactionUnlockTime() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             checkState(getState().compareTo(State.WAITING_FOR_MULTISIG_CONTRACT) > 0 && getState() != State.ERROR);
             return refundTransactionUnlockTimeSecs;

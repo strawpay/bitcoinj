@@ -34,7 +34,7 @@ import static com.google.common.base.Preconditions.checkArgument;
  */
 public class StoredServerChannel {
     final ReentrantLock lock = Threading.lock("StoredServerChannel");
-
+    
     /**
      * Channel version number. Currently can only be version 1
      */
@@ -74,7 +74,7 @@ public class StoredServerChannel {
      * <p>Does <i>NOT</i> notify the wallet of an update to the {@link StoredPaymentChannelServerStates}.</p>
      */
     void updateValueToMe(Coin newValue, byte[] newSignature) {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             this.bestValueToMe = newValue;
             this.bestValueSignature = newSignature;
@@ -88,7 +88,7 @@ public class StoredServerChannel {
      * already one attached.
      */
     PaymentChannelServer setConnectedHandler(PaymentChannelServer connectedHandler, boolean override) {
-        lock.lock();
+        Threading.lockPrintFail(lock);
 
         try {
             if (this.connectedHandler != null && !override)
@@ -102,7 +102,7 @@ public class StoredServerChannel {
 
     /** Clears a handler that was connected with setConnectedHandler. */
     void clearConnectedHandler() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
 
         try {
             this.connectedHandler = null;
@@ -116,14 +116,18 @@ public class StoredServerChannel {
      * method thus disconnecting the TCP connection.
      */
     void closeConnectedHandler() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
 
+        final PaymentChannelServer connectedHandler;
         try {
-            if (connectedHandler != null)
-            connectedHandler.close();
+            connectedHandler = this.connectedHandler;
         } finally {
             lock.unlock();
         }
+
+        // Lock order must respect PaymentChannelServer -> StoredServerChannel
+        if (connectedHandler != null)
+            connectedHandler.close();
     }
 
     /**
@@ -135,7 +139,7 @@ public class StoredServerChannel {
      * @param broadcaster The {@link TransactionBroadcaster} which will be used to broadcast contract/payment transactions.
      */
     public PaymentChannelServerState getOrCreateState(Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
-        lock.lock();
+        Threading.lockPrintFail(lock);
 
         try {
             if (state == null) {
@@ -159,7 +163,7 @@ public class StoredServerChannel {
 
     @Override
     public String toString() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
 
         try {
             final String newline = String.format(Locale.US, "%n");

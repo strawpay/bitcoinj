@@ -16,11 +16,6 @@
 
 package org.bitcoinj.protocols.channels;
 
-import com.google.common.base.Throwables;
-import org.bitcoinj.utils.Threading;
-import org.bitcoinj.wallet.SendRequest;
-import org.bitcoinj.wallet.Wallet;
-
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.FutureCallback;
@@ -30,18 +25,18 @@ import com.google.common.util.concurrent.SettableFuture;
 import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.script.Script;
+import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.SendRequest;
+import org.bitcoinj.wallet.Wallet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
-
 import java.util.Arrays;
 import java.util.concurrent.locks.ReentrantLock;
 
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkNotNull;
-import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Preconditions.*;
 
 /**
  * <p>A payment channel is a method of sending money to someone such that the amount of money you send can be adjusted
@@ -120,24 +115,22 @@ public abstract class PaymentChannelServerState {
     protected Transaction contract = null;
     protected Transaction closeTx = null;
 
+    protected void lock() { wallet.lockWalletAndThen(lock); }
+    protected void unlock() { wallet.unlockLockAndThenWallet(lock); }
+
     PaymentChannelServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
-        storedServerChannel.lock.lock();
-        try {
-            this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
-            this.wallet = checkNotNull(wallet);
-            this.broadcaster = checkNotNull(broadcaster);
-            this.contract = checkNotNull(storedServerChannel.contract);
-            this.closeTx = storedServerChannel.close;
-            this.serverKey = checkNotNull(storedServerChannel.myKey);
-            this.storedServerChannel = storedServerChannel;
-            this.bestValueToMe = checkNotNull(storedServerChannel.bestValueToMe);
-            this.minExpireTime = storedServerChannel.refundTransactionUnlockTimeSecs;
-            this.bestValueSignature = storedServerChannel.bestValueSignature;
-            checkArgument(bestValueToMe.equals(Coin.ZERO) || bestValueSignature != null);
-            storedServerChannel.state = this;
-        } finally {
-            storedServerChannel.lock.unlock();
-        }
+        this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
+        this.wallet = checkNotNull(wallet);
+        this.broadcaster = checkNotNull(broadcaster);
+        this.contract = checkNotNull(storedServerChannel.contract);
+        this.closeTx = storedServerChannel.close;
+        this.serverKey = checkNotNull(storedServerChannel.myKey);
+        this.storedServerChannel = storedServerChannel;
+        this.bestValueToMe = checkNotNull(storedServerChannel.bestValueToMe);
+        this.minExpireTime = storedServerChannel.refundTransactionUnlockTimeSecs;
+        this.bestValueSignature = storedServerChannel.bestValueSignature;
+        checkArgument(bestValueToMe.equals(Coin.ZERO) || bestValueSignature != null);
+        storedServerChannel.state = this;
         log.debug("Constructed PaymentChannelServerState from StoredServerChannel {}", storedServerChannel);
     }
 
@@ -162,7 +155,7 @@ public abstract class PaymentChannelServerState {
     public abstract int getMajorVersion();
 
     public State getState() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             return stateMachine.getState();
         } finally {
@@ -183,7 +176,7 @@ public abstract class PaymentChannelServerState {
      * @throws VerificationException If the provided multisig contract is not well-formed or does not meet previously-specified parameters
      */
     public ListenableFuture<PaymentChannelServerState> provideContract(final Transaction contract) throws VerificationException {
-        lock.lock();
+        lock();
         try {
             checkNotNull(contract);
 
@@ -236,13 +229,13 @@ public abstract class PaymentChannelServerState {
             });
             return future;
         } finally {
-            lock.unlock();
+            unlock();
         }
     }
 
     // Create a payment transaction with valueToMe going back to us
     protected SendRequest makeUnsignedChannelContract(Coin valueToMe) {
-        lock.lock();
+        Threading.lockPrintFail(lock);
 
         try {
             Transaction tx = new Transaction(wallet.getParams());
@@ -267,7 +260,7 @@ public abstract class PaymentChannelServerState {
      * @return true if there is more value left on the channel, false if it is now fully used up.
      */
     public boolean incrementPayment(Coin refundSize, byte[] signatureBytes) throws VerificationException, ValueOutOfRangeException, InsufficientMoneyException {
-        lock.lock();
+        lock();
         try {
             stateMachine.checkState(State.READY);
             checkNotNull(refundSize);
@@ -324,7 +317,7 @@ public abstract class PaymentChannelServerState {
             updateChannelInWallet();
             return !fullyUsedUp;
         } finally {
-            lock.unlock();
+            unlock();
         }
     }
 
@@ -355,7 +348,7 @@ public abstract class PaymentChannelServerState {
      * Gets the highest payment to ourselves (which we will receive on settle(), not including fees)
      */
     public Coin getBestValueToMe() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             return bestValueToMe;
         } finally {
@@ -372,7 +365,7 @@ public abstract class PaymentChannelServerState {
      * Gets the multisig contract which was used to initialize this channel
      */
     public Transaction getContract() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             checkState(contract != null);
             return contract;
@@ -386,7 +379,7 @@ public abstract class PaymentChannelServerState {
     }
 
     protected void updateChannelInWallet() {
-        lock.lock();
+        lock();
         try {
             if (storedServerChannel != null) {
                 storedServerChannel.updateValueToMe(bestValueToMe, bestValueSignature);
@@ -395,7 +388,7 @@ public abstract class PaymentChannelServerState {
                 channels.updatedChannel(storedServerChannel);
             }
         } finally {
-            lock.unlock();
+            unlock();
         }
     }
 
@@ -411,7 +404,7 @@ public abstract class PaymentChannelServerState {
      *                         handler which can then do a TCP disconnect.
      */
     public void storeChannelInWallet(@Nullable PaymentChannelServer connectedHandler) {
-        lock.lock();
+        lock();
         try {
             stateMachine.checkState(State.READY);
             if (storedServerChannel != null)
@@ -425,14 +418,13 @@ public abstract class PaymentChannelServerState {
                 checkState(storedServerChannel.setConnectedHandler(connectedHandler, false) == connectedHandler);
             channels.putChannel(storedServerChannel);
         } finally {
-            lock.unlock();
+            unlock();
         }
     }
 
     public abstract TransactionOutput getClientOutput();
 
-    public Script getContractScript() {
-        // TODO locking?
+    protected Script getContractScript() {
         if (contract == null) {
             return null;
         }

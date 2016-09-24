@@ -182,6 +182,16 @@ public class Threading {
     // Cycle detecting lock factories
     //
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    static private final Logger lockPrintFailLog = LoggerFactory.getLogger(Threading.class);
+    public static void lockPrintFail(ReentrantLock lock) {
+        // DEBUG help...
+        try {
+            lock.lock();
+        } catch (Throwable th) {
+            lockPrintFailLog.error("Failed to get lock", th);
+            throw new RuntimeException(th);
+        }
+    }
 
     private static CycleDetectingLockFactory.Policy policy;
     public static CycleDetectingLockFactory factory;

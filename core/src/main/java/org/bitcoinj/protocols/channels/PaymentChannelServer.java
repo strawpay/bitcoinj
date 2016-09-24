@@ -366,7 +366,7 @@ public class PaymentChannelServer {
     }
 
     private void multisigContractPropogated(Protos.ProvideContract providedContract, Sha256Hash contractHash) {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             if (!connectionOpen || channelSettling)
                 return;
@@ -471,7 +471,7 @@ public class PaymentChannelServer {
      * content.
      */
     public void receiveMessage(Protos.TwoWayChannelMessage msg) {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             checkState(connectionOpen);
             if (channelSettling)
@@ -598,7 +598,7 @@ public class PaymentChannelServer {
      * {@link PaymentChannelServer#close()} is called to actually handle the connection close logic.</p>
      */
     public void connectionClosed() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             log.info("Server channel closed.");
             connectionOpen = false;
@@ -626,7 +626,7 @@ public class PaymentChannelServer {
      * Called to indicate the connection has been opened and messages can now be generated for the client.
      */
     public void connectionOpen() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             log.info("New server channel active.");
             connectionOpen = true;
@@ -644,7 +644,7 @@ public class PaymentChannelServer {
      * closes.</p>
      */
     public void close() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             if (connectionOpen && !channelSettling) {
                 final Protos.TwoWayChannelMessage.Builder msg = Protos.TwoWayChannelMessage.newBuilder();

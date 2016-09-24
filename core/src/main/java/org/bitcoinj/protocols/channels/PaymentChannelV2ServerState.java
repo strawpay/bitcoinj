@@ -16,7 +16,6 @@
 
 package org.bitcoinj.protocols.channels;
 
-import com.google.common.base.Throwables;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.MultimapBuilder;
 import com.google.common.util.concurrent.FutureCallback;
@@ -55,16 +54,11 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
 
     PaymentChannelV2ServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         super(storedServerChannel, wallet, broadcaster);
-        storedServerChannel.lock.lock();
-        try {
-            this.clientKey = storedServerChannel.clientKey;
-            if (storedServerChannel.close == null) {
-                stateMachine.transition(State.READY);
-            } else {
-                stateMachine.transition(State.CLOSED);
-            }
-        } finally {
-            storedServerChannel.lock.unlock();
+        this.clientKey = storedServerChannel.clientKey;
+        if (storedServerChannel.close == null) {
+            stateMachine.transition(State.READY);
+        } else {
+            stateMachine.transition(State.CLOSED);
         }
     }
 
@@ -105,7 +99,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
 
     @Override
     public Coin getFeePaid() {
-        lock.lock();
+        Threading.lockPrintFail(lock);
         try {
             stateMachine.checkState(State.CLOSED, State.CLOSING);
             return feePaidForPayment;
@@ -161,7 +155,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
 
     @Override
     public ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
-        lock.lock();
+        lock();
         try {
             log.debug("state instance hashCode {}", hashCode());
 
@@ -253,7 +247,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
 
             return closedFuture;
         } finally {
-            lock.unlock();
+            unlock();
         }
     }
 }
