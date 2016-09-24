@@ -487,7 +487,6 @@ public abstract class PaymentChannelClientState {
     public Coin getValueRefunded() {
         try {
             lock.lock();
-            stateMachine.checkState(State.READY);
             return valueToMe;
         } finally {
             lock.unlock();

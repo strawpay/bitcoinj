@@ -567,7 +567,8 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                     lock();
                     try {
                         if (storedChannel.active) {
-                            log.debug("Channel is active, PaymentChannelClientState is responsible.");
+                            log.debug("onCoinsReceived {} isSettlementTransaction={} - Channel is active, PaymentChannelClientState is responsible.",
+                                    tx.getHash(), isSettlementTransaction(contract(), tx));
                         } else if (tx.getHash() == storedChannel.refund.getHash()) {
                             log.debug("onCoinsReceived refund tx {}", tx.getHash());
                             watchTxConfirmations(tx, "refund");

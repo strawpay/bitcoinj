@@ -121,16 +121,12 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
         // now we can lock first on state if we need to use it.
         if (hasCloseTx) {
-            try {
-                log.debug("Channel was already closed {} ", storedServerChannel.contract.getHash());
-                if (close.getConfidence(wallet.getContext().getConfidenceTable()).getDepthInBlocks() == 0) {
-                    log.debug("Broadcasting unconfirmed close again {} ", close.getHash());
-                    getBroadcaster().broadcastTransaction(close);
-                }
-                watchTxConfirmations(storedServerChannel.contract.getHash(), close);
-            } finally {
-                wallet.unlockLockAndThenWallet(storedServerChannel.lock);
+            log.debug("Channel was already closed {} ", storedServerChannel.contract.getHash());
+            if (close.getConfidence(wallet.getContext().getConfidenceTable()).getDepthInBlocks() == 0) {
+                log.debug("Broadcasting unconfirmed close again {} ", close.getHash());
+                getBroadcaster().broadcastTransaction(close);
             }
+            watchTxConfirmations(storedServerChannel.contract.getHash(), close);
         } else {
             log.debug("Channel not closed yet {} ", storedServerChannel.contract.getHash());
             final PaymentChannelServerState state = storedServerChannel.getOrCreateState(wallet, getBroadcaster());
