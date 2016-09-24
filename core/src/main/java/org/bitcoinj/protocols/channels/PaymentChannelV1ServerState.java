@@ -47,9 +47,6 @@ import static com.google.common.base.Preconditions.checkState;
 public class PaymentChannelV1ServerState extends PaymentChannelServerState {
     private static final Logger log = LoggerFactory.getLogger(PaymentChannelV1ServerState.class);
 
-    // The total value locked into the multi-sig output and the value to us in the last signature the client provided
-    private Coin feePaidForPayment;
-
     // The client key for the multi-sig contract
     // We currently also use the serverKey for payouts, but this is not required
     protected ECKey clientKey;
@@ -175,6 +172,12 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
         return clientKey;
     }
 
+    @Override
+    void signInput(Transaction tx, Transaction.SigHash hashType,
+                   boolean anyoneCanPay, @Nullable KeyParameter userKey) {
+        signMultisigInput(tx, hashType, anyoneCanPay, userKey);
+    }
+
     // Signs the first input of the transaction which must spend the multisig contract.
     private void signMultisigInput(Transaction tx, Transaction.SigHash hashType,
                                    boolean anyoneCanPay, @Nullable KeyParameter userKey) {
@@ -182,129 +185,6 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
         byte[] mySig = signature.encodeToBitcoin();
         Script scriptSig = ScriptBuilder.createMultiSigInputScriptBytes(ImmutableList.of(bestValueSignature, mySig));
         tx.getInput(0).setScriptSig(scriptSig);
-    }
-
-    final SettableFuture<Transaction> closedFuture = SettableFuture.create();
-    /**
-     * <p>Closes this channel and broadcasts the highest value payment transaction on the network.</p>
-     *
-     * <p>This will set the state to {@link State#CLOSED} if the transaction is successfully broadcast on the network.
-     * If we fail to broadcast for some reason, the state is set to {@link State#ERROR}.</p>
-     *
-     * <p>If the current state is before {@link State#READY} (ie we have not finished initializing the channel), we
-     * simply set the state to {@link State#CLOSED} and let the client handle getting its refund transaction confirmed.
-     * </p>
-     *
-     * @param userKey The AES key to use for decryption of the private key. If null then no decryption is required.
-     * @return a future which completes when the provided multisig contract successfully broadcasts, or throws if the
-     *         broadcast fails for some reason. Note that if the network simply rejects the transaction, this future
-     *         will never complete, a timeout should be used.
-     * @throws InsufficientMoneyException If the payment tx would have cost more in fees to spend than it is worth.
-     */
-    @Override
-    public ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
-        lock();
-        try {
-            if (closeTx != null) {
-                log.info("close() called on already closed contract {} with close tx {}", contract, closeTx);
-                return closedFuture;
-            }
-
-            if (storedServerChannel != null) {
-                StoredServerChannel temp = storedServerChannel;
-                storedServerChannel = null;
-                StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                        wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
-                channels.closeChannel(temp); // May call this method again for us (if it wasn't the original caller)
-                if (getState().compareTo(State.CLOSING) >= 0)
-                    return closedFuture;
-            }
-
-            if (getState().ordinal() < State.READY.ordinal()) {
-                log.error("Attempt to settle channel in state " + getState());
-                stateMachine.transition(State.CLOSED);
-                closedFuture.set(null);
-                return closedFuture;
-            }
-            if (getState() != State.READY) {
-                // TODO: What is this codepath for?
-                log.warn("Failed attempt to settle a channel in state " + getState());
-                return closedFuture;
-            }
-            Transaction tx = null;
-            try {
-                SendRequest req = makeUnsignedChannelContract(bestValueToMe);
-                tx = req.tx;
-                // Provide a throwaway signature so that completeTx won't complain out about unsigned inputs it doesn't
-                // know how to sign. Note that this signature does actually have to be valid, so we can't use a dummy
-                // signature to save time, because otherwise completeTx will try to re-sign it to make it valid and then
-                // die. We could probably add features to the SendRequest API to make this a bit more efficient.
-                signMultisigInput(tx, Transaction.SigHash.NONE, true, userKey);
-                // Let wallet handle adding additional inputs/fee as necessary.
-                req.shuffleOutputs = false;
-                req.missingSigsMode = Wallet.MissingSigsMode.USE_DUMMY_SIG;
-                wallet.completeTx(req);  // TODO: Fix things so shuffling is usable.
-                feePaidForPayment = req.tx.getFee();
-                log.info("Calculated fee is {}", feePaidForPayment);
-                if (feePaidForPayment.compareTo(bestValueToMe) > 0) {
-                    final String msg = String.format(Locale.US, "Had to pay more in fees (%s) than the channel was worth (%s)",
-                            feePaidForPayment, bestValueToMe);
-                    throw new InsufficientMoneyException(feePaidForPayment.subtract(bestValueToMe), msg);
-                }
-                // Now really sign the multisig input.
-                signMultisigInput(tx, Transaction.SigHash.ALL, false, userKey);
-                // Some checks that shouldn't be necessary but it can't hurt to check.
-                tx.verify();  // Sanity check syntax.
-                for (TransactionInput input : tx.getInputs())
-                    input.verify();  // Run scripts and ensure it is valid.
-            } catch (InsufficientMoneyException e) {
-                throw e;  // Don't fall through.
-            } catch (Exception e) {
-                log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "", e);
-                throw new RuntimeException(e);  // Should never happen.
-            }
-            stateMachine.transition(State.CLOSING);
-
-            closeTx = tx;
-        } finally {
-            unlock();
-        }
-
-        // Broadcast close for contract without holding wallet lock (lock order is PeerGroup -> Wallet)
-        log.info("Closing channel, broadcasting tx {}", closeTx);
-        // The act of broadcasting the transaction will add it to the wallet.
-        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
-
-        Futures.addCallback(future, new FutureCallback<Transaction>() {
-            @Override
-            public void onSuccess(Transaction transaction) {
-                log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
-                stateMachine.transition(State.CLOSED);
-                closedFuture.set(transaction);
-            }
-
-            @Override
-            public void onFailure(Throwable throwable) {
-                log.error("Failed to settle channel, could not broadcast: {}", throwable);
-                stateMachine.transition(State.ERROR);
-                closedFuture.setException(throwable);
-            }
-        });
-        return closedFuture;
-    }
-
-    /**
-     * Gets the fee paid in the final payment transaction (only available if settle() did not throw an exception)
-     */
-    @Override
-    public Coin getFeePaid() {
-        Threading.lockPrintFail(lock);
-        try {
-            stateMachine.checkState(State.CLOSED, State.CLOSING);
-            return feePaidForPayment;
-        } finally {
-            lock.unlock();
-        }
     }
 
     /**
