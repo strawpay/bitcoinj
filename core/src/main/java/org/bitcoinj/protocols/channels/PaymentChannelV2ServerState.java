@@ -55,7 +55,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
     PaymentChannelV2ServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         super(storedServerChannel, wallet, broadcaster);
         this.clientKey = storedServerChannel.clientKey;
-        if (storedServerChannel.close == null) {
+        if (storedServerChannel.getCloseTransaction() == null) {
             stateMachine.transition(State.READY);
         } else {
             stateMachine.transition(State.CLOSED);
@@ -156,6 +156,10 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
     @Override
     public ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
         lock();
+
+        final boolean needToCloseOnExtension;
+        final StoredServerChannel toCloseAtExtension;
+        final StoredPaymentChannelServerStates channels;
         try {
             log.debug("state instance hashCode {}", hashCode());
 
@@ -164,20 +168,33 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
                 return closedFuture;
             }
 
-            log.debug("close: storedServerChannel={}", storedServerChannel);
+            channels = (StoredPaymentChannelServerStates)
+                    wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
 
+            log.debug("close: storedServerChannel={}", storedServerChannel);
             if (storedServerChannel != null) {
-                StoredServerChannel temp = storedServerChannel;
+                toCloseAtExtension = storedServerChannel;
                 storedServerChannel = null;
-                StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                        wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
-                channels.closeChannel(temp); // May call this method again for us (if it wasn't the original caller)
+                needToCloseOnExtension = true;
                 if (getState().compareTo(State.CLOSING) >= 0)
                     return closedFuture;
+            } else {
+                needToCloseOnExtension = false;
+                toCloseAtExtension = null;
             }
+        } finally {
+            unlock();
+        }
+
+        if (needToCloseOnExtension) {
+            // Call again, no wallet lock
+            channels.closeChannel(toCloseAtExtension); // May call this method again for us (if it wasn't the original caller)
+        }
+
+        try {
+            lock();
 
             log.debug("close: getState()={}", getState());
-
             if (getState().ordinal() < State.READY.ordinal()) {
                 log.error("Attempt to settle channel in state " + getState());
                 stateMachine.transition(State.CLOSED);
@@ -222,32 +239,33 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
                 throw new RuntimeException(e);  // Should never happen.
             }
             stateMachine.transition(State.CLOSING);
-
             closeTx = tx;
-            log.info("Closing channel, broadcasting tx {}", closeTx);
-            // The act of broadcasting the transaction will add it to the wallet.
-            ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
-
-            Futures.addCallback(future, new FutureCallback<Transaction>() {
-                @Override
-                public void onSuccess(Transaction transaction) {
-                    log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
-                    stateMachine.transition(State.CLOSED);
-                    closedFuture.set(transaction);
-                }
-
-                @Override
-                public void onFailure(Throwable throwable) {
-                    log.error("Failed to settle channel, could not broadcast: {}", throwable);
-                    stateMachine.transition(State.ERROR);
-                    closedFuture.setException(throwable);
-                }
-            });
-            log.debug("close: finished");
-
-            return closedFuture;
         } finally {
             unlock();
         }
+
+        // Broadcast close for contract without holding wallet lock (lock order is PeerGroup -> Wallet)
+        log.info("Closing channel, broadcasting tx {}", closeTx);
+        // The act of broadcasting the transaction will add it to the wallet.
+        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
+
+        Futures.addCallback(future, new FutureCallback<Transaction>() {
+            @Override
+            public void onSuccess(Transaction transaction) {
+                log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
+                stateMachine.transition(State.CLOSED);
+                closedFuture.set(transaction);
+            }
+
+            @Override
+            public void onFailure(Throwable throwable) {
+                log.error("Failed to settle channel, could not broadcast: {}", throwable);
+                stateMachine.transition(State.ERROR);
+                closedFuture.setException(throwable);
+            }
+        });
+        log.debug("close: finished");
+
+        return closedFuture;
     }
 }

@@ -4726,6 +4726,7 @@ public class Wallet extends BaseTaggableObject
      * */
     public void lockWalletAndThen(ReentrantLock lockAfterWalletLock) {
         Threading.lockPrintFail(lock);
+        Threading.lockPrintFail(keyChainGroupLock);
         Threading.lockPrintFail(lockAfterWalletLock);
     }
 
@@ -4737,6 +4738,7 @@ public class Wallet extends BaseTaggableObject
      * */
     public void unlockLockAndThenWallet(ReentrantLock unlockBeforeWalletLock) {
         unlockBeforeWalletLock.unlock();
+        keyChainGroupLock.unlock();
         lock.unlock();
     }
 

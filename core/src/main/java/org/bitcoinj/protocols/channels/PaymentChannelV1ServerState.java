@@ -63,7 +63,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
         this.clientKey = ECKey.fromPublicOnly(getContractScript().getChunks().get(1).data);
         this.clientOutput = checkNotNull(storedServerChannel.clientOutput);
         this.refundTransactionUnlockTimeSecs = storedServerChannel.refundTransactionUnlockTimeSecs;
-        if (storedServerChannel.close == null) {
+        if (storedServerChannel.getCloseTransaction() == null) {
             stateMachine.transition(State.READY);
         } else {
             stateMachine.transition(State.CLOSED);
@@ -266,29 +266,31 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
             stateMachine.transition(State.CLOSING);
 
             closeTx = tx;
-            log.info("Closing channel, broadcasting tx {}", closeTx);
-            // The act of broadcasting the transaction will add it to the wallet.
-            ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
-
-            Futures.addCallback(future, new FutureCallback<Transaction>() {
-                @Override
-                public void onSuccess(Transaction transaction) {
-                    log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
-                    stateMachine.transition(State.CLOSED);
-                    closedFuture.set(transaction);
-                }
-
-                @Override
-                public void onFailure(Throwable throwable) {
-                    log.error("Failed to settle channel, could not broadcast: {}", throwable);
-                    stateMachine.transition(State.ERROR);
-                    closedFuture.setException(throwable);
-                }
-            });
-            return closedFuture;
         } finally {
             unlock();
         }
+
+        // Broadcast close for contract without holding wallet lock (lock order is PeerGroup -> Wallet)
+        log.info("Closing channel, broadcasting tx {}", closeTx);
+        // The act of broadcasting the transaction will add it to the wallet.
+        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
+
+        Futures.addCallback(future, new FutureCallback<Transaction>() {
+            @Override
+            public void onSuccess(Transaction transaction) {
+                log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
+                stateMachine.transition(State.CLOSED);
+                closedFuture.set(transaction);
+            }
+
+            @Override
+            public void onFailure(Throwable throwable) {
+                log.error("Failed to settle channel, could not broadcast: {}", throwable);
+                stateMachine.transition(State.ERROR);
+                closedFuture.setException(throwable);
+            }
+        });
+        return closedFuture;
     }
 
     /**

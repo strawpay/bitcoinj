@@ -123,7 +123,7 @@ public abstract class PaymentChannelServerState {
         this.wallet = checkNotNull(wallet);
         this.broadcaster = checkNotNull(broadcaster);
         this.contract = checkNotNull(storedServerChannel.contract);
-        this.closeTx = storedServerChannel.close;
+        this.closeTx = storedServerChannel.getCloseTransaction();
         this.serverKey = checkNotNull(storedServerChannel.myKey);
         this.storedServerChannel = storedServerChannel;
         this.bestValueToMe = checkNotNull(storedServerChannel.bestValueToMe);

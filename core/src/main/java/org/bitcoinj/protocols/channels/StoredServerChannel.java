@@ -43,7 +43,7 @@ public class StoredServerChannel {
     byte[] bestValueSignature;
     long refundTransactionUnlockTimeSecs;
     Transaction contract;
-    @Nullable Transaction close;
+    private @Nullable Transaction close;
     TransactionOutput clientOutput;
     ECKey myKey;
     // Used in protocol v2 only
@@ -111,23 +111,36 @@ public class StoredServerChannel {
         }
     }
 
-    /**
-     * If a handler is connected, call its {@link org.bitcoinj.protocols.channels.PaymentChannelServer#close()}
-     * method thus disconnecting the TCP connection.
-     */
-    void closeConnectedHandler() {
-        Threading.lockPrintFail(lock);
+    /*
 
-        final PaymentChannelServer connectedHandler;
+    /** Returns the connectedHandler or null */
+    PaymentChannelServer getConnectedHandler() {
+        Threading.lockPrintFail(lock);
         try {
-            connectedHandler = this.connectedHandler;
+            return connectedHandler;
         } finally {
             lock.unlock();
         }
+    }
 
-        // Lock order must respect PaymentChannelServer -> StoredServerChannel
-        if (connectedHandler != null)
-            connectedHandler.close();
+    /** Sets the close transaction or null if there no close transactions has been detected.*/
+    void setCloseTransaction(Transaction close) {
+        Threading.lockPrintFail(lock);
+        try {
+            this.close = close;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Returns the close transaction or null if there no close transactions has been detected.*/
+    Transaction getCloseTransaction() {
+        Threading.lockPrintFail(lock);
+        try {
+            return close;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
