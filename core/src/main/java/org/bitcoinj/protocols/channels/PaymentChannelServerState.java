@@ -203,34 +203,36 @@ public abstract class PaymentChannelServerState {
             log.info("Broadcasting multisig contract: {}", contract);
             wallet.addWatchedScripts(ImmutableList.of(contract.getOutput(0).getScriptPubKey()));
             stateMachine.transition(State.WAITING_FOR_MULTISIG_ACCEPTANCE);
-            final SettableFuture<PaymentChannelServerState> future = SettableFuture.create();
-            Futures.addCallback(broadcaster.broadcastTransaction(contract).future(), new FutureCallback<Transaction>() {
-                @Override
-                public void onSuccess(Transaction transaction) {
-                    log.info("Successfully broadcast multisig contract {}. Channel now open.", transaction.getHashAsString());
-                    try {
-                        // Manually add the contract to the wallet, overriding the isRelevant checks so we can track
-                        // it and check for double-spends later
-                        wallet.receivePending(contract, null, true);
-                    } catch (VerificationException e) {
-                        throw new RuntimeException(e); // Cannot happen, we already called contract.verify()
-                    }
-                    stateMachine.transition(State.READY);
-                    future.set(PaymentChannelServerState.this);
-                }
-
-                @Override
-                public void onFailure(Throwable throwable) {
-                    // Couldn't broadcast the transaction for some reason.
-                    log.error("Failed to broadcast contract", throwable);
-                    stateMachine.transition(State.ERROR);
-                    future.setException(throwable);
-                }
-            });
-            return future;
         } finally {
             unlock();
         }
+        
+        // Broadcast Transaction for contract without holding wallet lock (lock order is PeerGroup -> Wallet)
+        final SettableFuture<PaymentChannelServerState> future = SettableFuture.create();
+        Futures.addCallback(broadcaster.broadcastTransaction(contract).future(), new FutureCallback<Transaction>() {
+            @Override
+            public void onSuccess(Transaction transaction) {
+                log.info("Successfully broadcast multisig contract {}. Channel now open.", transaction.getHashAsString());
+                try {
+                    // Manually add the contract to the wallet, overriding the isRelevant checks so we can track
+                    // it and check for double-spends later
+                    wallet.receivePending(contract, null, true);
+                } catch (VerificationException e) {
+                    throw new RuntimeException(e); // Cannot happen, we already called contract.verify()
+                }
+                stateMachine.transition(State.READY);
+                future.set(PaymentChannelServerState.this);
+            }
+
+            @Override
+            public void onFailure(Throwable throwable) {
+                // Couldn't broadcast the transaction for some reason.
+                log.error("Failed to broadcast contract", throwable);
+                stateMachine.transition(State.ERROR);
+                future.setException(throwable);
+            }
+        });
+        return future;
     }
 
     // Create a payment transaction with valueToMe going back to us
