@@ -318,10 +318,11 @@ public class PaymentChannelStateTest extends TestWithWallet {
         Transaction closeTx = pair2.tx;
         pair2.future.set(closeTx);
         final Transaction reserializedCloseTx = new Transaction(PARAMS, closeTx.bitcoinSerialize());
+        Thread.sleep(500);
         assertEquals(PaymentChannelServerState.State.CLOSED, serverState.getState());
         // ... and on the client side.
         wallet.receivePending(reserializedCloseTx, null);
-        Thread.sleep(1000);
+        Thread.sleep(500);
         assertEquals(PaymentChannelClientState.State.CLOSED, clientState.getState());
 
         // Create a block with the payment transaction in it and give it to both wallets
@@ -798,6 +799,7 @@ public class PaymentChannelStateTest extends TestWithWallet {
         assertEquals(PaymentChannelServerState.State.CLOSING, serverState.getState());
         pair = broadcasts.take();
         pair.future.set(pair.tx);
+        Thread.sleep(500);
         assertEquals(PaymentChannelServerState.State.CLOSED, serverState.getState());
     }
 

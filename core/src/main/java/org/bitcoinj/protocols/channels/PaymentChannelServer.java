@@ -429,7 +429,7 @@ public class PaymentChannelServer {
 
         Coin lastBestPayment = state.getBestValueToMe();
         final Coin refundSize = Coin.valueOf(msg.getClientChangeValue());
-        boolean stillUsable = state.incrementPayment(refundSize, msg.getSignature().toByteArray());
+        final boolean balanceLeft = state.incrementPayment(refundSize, msg.getSignature().toByteArray());
         Coin bestPaymentChange = state.getBestValueToMe().subtract(lastBestPayment);
 
         ListenableFuture<ByteString> ackInfoFuture = null;
@@ -443,26 +443,39 @@ public class PaymentChannelServer {
             ack.setType(Protos.TwoWayChannelMessage.MessageType.PAYMENT_ACK);
             if (ackInfoFuture == null) {
                 conn.sendToClient(ack.build());
+                settleIfExhausted(balanceLeft);
             } else {
                 Futures.addCallback(ackInfoFuture, new FutureCallback<ByteString>() {
                     @Override
                     public void onSuccess(@Nullable ByteString result) {
+                        log.info("Got return value from paymentIncrease");
                         if (result != null) ack.setPaymentAck(ack.getPaymentAckBuilder().setInfo(result));
                         conn.sendToClient(ack.build());
+                        settleIfExhausted(balanceLeft);
                     }
 
                     @Override
                     public void onFailure(Throwable t) {
                         log.info("Failed retrieving paymentIncrease info future");
                         error("Failed processing payment update", Protos.Error.ErrorCode.OTHER, CloseReason.UPDATE_PAYMENT_FAILED);
+                        settleIfExhausted(balanceLeft);
                     }
                 });
             }
+        } else {
+            // no ack, ok to close immediately.
+            settleIfExhausted(balanceLeft);
         }
+    }
 
-        if (!stillUsable) {
+    private void settleIfExhausted(boolean balanceLeft) {
+        if (!balanceLeft) {
             log.info("Channel is now fully exhausted, closing/initiating settlement");
-            settlePayment(CloseReason.CHANNEL_EXHAUSTED);
+            try {
+                settlePayment(CloseReason.CHANNEL_EXHAUSTED);
+            } catch (InsufficientMoneyException e) {
+                log.warn("InsufficientMoneyException when calling settlePayment.", e);
+            }
         }
     }
 

@@ -325,6 +325,7 @@ public class PaymentChannelFeeTest extends TestWithWallet {
         assertEquals(PaymentChannelServerState.State.CLOSING, serverState.getState());
         pair = broadcasts.take();  // settle
         pair.future.set(pair.tx);
+        Thread.sleep(500);
         assertEquals(PaymentChannelServerState.State.CLOSED, serverState.getState());
         serverState.close();
         assertEquals(PaymentChannelServerState.State.CLOSED, serverState.getState());

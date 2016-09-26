@@ -30,11 +30,15 @@ import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.spongycastle.crypto.RuntimeCryptoException;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.*;
@@ -359,8 +363,7 @@ public abstract class PaymentChannelServerState {
     public ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
         lock();
 
-        final boolean needToCloseOnExtension;
-        final StoredServerChannel toCloseAtExtension;
+        final StoredServerChannel tempForCallingExtension;
         final StoredPaymentChannelServerStates channels;
         try {
             log.debug("state instance hashCode {}", hashCode());
@@ -375,28 +378,26 @@ public abstract class PaymentChannelServerState {
 
             log.debug("close: storedServerChannel={}", storedServerChannel);
             if (storedServerChannel != null) {
-                toCloseAtExtension = storedServerChannel;
+                // TODO. Amazingly ugly design that now needs to call channels.closeChannel that then calls back here.
+                // Locks make us defer the call to below when  released the locks.
+                tempForCallingExtension = storedServerChannel;
                 storedServerChannel = null;
-                needToCloseOnExtension = true;
-                if (getState().compareTo(State.CLOSING) >= 0)
-                    return closedFuture;
             } else {
-                needToCloseOnExtension = false;
-                toCloseAtExtension = null;
+                tempForCallingExtension = null;
             }
         } finally {
             unlock();
         }
 
-        if (needToCloseOnExtension) {
-            // Call again, no wallet lock
-            channels.closeChannel(toCloseAtExtension); // May call this method again for us (if it wasn't the original caller)
+        if (tempForCallingExtension != null) {
+            // Now call channels,  no wallet lock when calling.
+            channels.closeChannel(tempForCallingExtension); // May call this method again for us (if it wasn't the original caller)
+            if (getState().compareTo(State.CLOSING) >= 0)
+                return closedFuture;
         }
 
         try {
             lock();
-
-            log.debug("close: getState()={}", getState());
             if (getState().ordinal() < State.READY.ordinal()) {
                 log.error("Attempt to settle channel in state " + getState());
                 stateMachine.transition(State.CLOSED);
@@ -449,9 +450,7 @@ public abstract class PaymentChannelServerState {
         // Broadcast close for contract without holding wallet lock (lock order is PeerGroup -> Wallet)
         log.info("Closing channel, broadcasting tx {}", closeTx);
         // The act of broadcasting the transaction will add it to the wallet.
-        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(closeTx).future();
-
-        Futures.addCallback(future, new FutureCallback<Transaction>() {
+        Futures.addCallback(broadcaster.broadcastTransaction(closeTx).future(), new FutureCallback<Transaction>() {
             @Override
             public void onSuccess(Transaction transaction) {
                 log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
@@ -467,6 +466,21 @@ public abstract class PaymentChannelServerState {
             }
         });
         log.debug("close: finished");
+
+        // TODO: The close broadcast future never seem to complete, but tx gets broadcast and included in the chain.
+        // Why? Add warning here for now.
+        Threading.THREAD_POOL.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Transaction t = closedFuture.get(60, TimeUnit.SECONDS);
+                } catch (TimeoutException timeout) {
+                    log.warn("closedFuture: Timeout!", timeout);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        });
 
         return closedFuture;
     }

@@ -466,6 +466,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                 final Transaction contract;
                 final String contractStr;
                 final Transaction refund;
+                final Coin valueToMe;
                 final String refundStr;
 
                 try {
@@ -477,37 +478,47 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                     contract = storedChannel.contract;
                     contractStr = contract.getHashAsString();
                     refund = storedChannel.refund;
+                    valueToMe = storedChannel.valueToMe;
                     refundStr = refund.getHashAsString();
                 } finally {
                     unlock();
                 }
 
-                // Continue with the timer thread but holding no locks to wallet or extension as we need to talk to peerGroup (lock order is PeerGroup -> Wallet)
-                try {
-                    // TODO does not seem to work by detecting spent...
-                    if (contract.getOutput(0).isAvailableForSpending()) {
-                        log.debug("TimerTask - contract {} expired but not settled...", contractStr);
+                final TransactionConfidence confidence = storedChannel.contract.getConfidence(containingWallet.getContext());
+                final int numConfirms = containingWallet.getContext().getEventHorizon();
 
-                        TransactionBroadcast contractBroadcast = peerGroup.broadcastTransaction(contract);
-                        log.debug("TimerTask - broadcasting contract {}", contractStr);
-                        observeAndLogBroadcast(contractBroadcast, "contract");
+                if (valueToMe.equals(Coin.ZERO) && confidence.getDepthInBlocks() >= numConfirms) {
+                    // TODO It should really be detected and removed after a Close transaction.
+                    log.info("Channel {} with established contract exhausted (no value to client) and expired", contractStr);
+                    removeChannel(storedChannel);
+                } else {
+                    // Continue with the timer thread but holding no locks to wallet or extension as we need to talk to peerGroup (lock order is PeerGroup -> Wallet)
+                    try {
+                        // TODO does not seem to work by detecting spent...
+                        if (contract.getOutput(0).isAvailableForSpending()) {
+                            log.debug("TimerTask - contract {} expired but not settled...", contractStr);
 
-                        log.debug("TimerTask - broadcasting refund {}", refundStr);
-                        try {
-                            containingWallet.receivePending(refund, null);
-                        } catch (VerificationException e) {
-                            throw new RuntimeException(e);   // Cannot fail to verify a tx we created ourselves.
+                            TransactionBroadcast contractBroadcast = peerGroup.broadcastTransaction(contract);
+                            log.debug("TimerTask - broadcasting contract {}", contractStr);
+                            observeAndLogBroadcast(contractBroadcast, "contract");
+
+                            log.debug("TimerTask - broadcasting refund {}", refundStr);
+                            try {
+                                containingWallet.receivePending(refund, null);
+                            } catch (VerificationException e) {
+                                throw new RuntimeException(e);   // Cannot fail to verify a tx we created ourselves.
+                            }
+                            TransactionBroadcast refundBroadcast = peerGroup.broadcastTransaction(refund);
+                            observeAndLogBroadcast(refundBroadcast, "refund");
+                        } else {
+                            log.debug("TimerTask - contract {} looks spent.", storedChannel.contract.getHashAsString());
                         }
-                        TransactionBroadcast refundBroadcast = peerGroup.broadcastTransaction(refund);
-                        observeAndLogBroadcast(refundBroadcast, "refund");
-                    } else {
-                        log.debug("TimerTask - contract {} looks spent.", storedChannel.contract.getHashAsString());
-                    }
 
-                } catch (Exception e) {
-                    // Something went wrong closing the channel - we catch
-                    // here or else we take down the whole Timer.
-                    log.error("Auto-closing channel failed", e);
+                    } catch (Exception e) {
+                        // Something went wrong closing the channel - we catch
+                        // here or else we take down the whole Timer.
+                        log.error("Auto-closing channel failed", e);
+                    }
                 }
             }
 
@@ -567,8 +578,8 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                     lock();
                     try {
                         if (storedChannel.active) {
-                            log.debug("onCoinsReceived {} isSettlementTransaction={} - Channel is active, PaymentChannelClientState is responsible.",
-                                    tx.getHash(), isSettlementTransaction(contract(), tx));
+                            log.debug("onCoinsReceived {} isSettlementTransaction={} for contract {} - Channel is active, PaymentChannelClientState is responsible.",
+                                    tx.getHash(), isSettlementTransaction(contract(), tx), contract().getHash());
                         } else if (tx.getHash() == storedChannel.refund.getHash()) {
                             log.debug("onCoinsReceived refund tx {}", tx.getHash());
                             watchTxConfirmations(tx, "refund");
