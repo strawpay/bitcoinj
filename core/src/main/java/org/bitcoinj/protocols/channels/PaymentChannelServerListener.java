@@ -105,7 +105,7 @@ public class PaymentChannelServerListener {
 
                 @Override
                 public void messageReceived(ProtobufConnection<Protos.TwoWayChannelMessage> handler, Protos.TwoWayChannelMessage msg) {
-                    Threading.lockPrintFail(lock);
+                    lock.lock();
                     try {
                         paymentChannelManager.receiveMessage(msg);
                     } finally {
@@ -115,7 +115,7 @@ public class PaymentChannelServerListener {
 
                 @Override
                 public void connectionClosed(ProtobufConnection<Protos.TwoWayChannelMessage> handler) {
-                    Threading.lockPrintFail(lock);
+                    lock.lock();
                     try {
                         paymentChannelManager.connectionClosed();
                         if (closeReason != null)
@@ -130,7 +130,7 @@ public class PaymentChannelServerListener {
 
                 @Override
                 public void connectionOpen(ProtobufConnection<Protos.TwoWayChannelMessage> handler) {
-                    Threading.lockPrintFail(lock);
+                    lock.lock();
                     try {
                         ServerConnectionEventHandler eventHandler = eventHandlerFactory.onNewConnection(address);
                         if (eventHandler == null)

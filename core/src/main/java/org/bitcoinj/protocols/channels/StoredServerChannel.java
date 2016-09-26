@@ -66,7 +66,6 @@ public class StoredServerChannel {
         this.bestValueToMe = bestValueToMe;
         this.bestValueSignature = bestValueSignature;
         this.state = state;
-        Threading.takeAndHold(this);
     }
 
     /**
@@ -74,7 +73,7 @@ public class StoredServerChannel {
      * <p>Does <i>NOT</i> notify the wallet of an update to the {@link StoredPaymentChannelServerStates}.</p>
      */
     void updateValueToMe(Coin newValue, byte[] newSignature) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             this.bestValueToMe = newValue;
             this.bestValueSignature = newSignature;
@@ -88,7 +87,7 @@ public class StoredServerChannel {
      * already one attached.
      */
     PaymentChannelServer setConnectedHandler(PaymentChannelServer connectedHandler, boolean override) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
 
         try {
             if (this.connectedHandler != null && !override)
@@ -102,7 +101,7 @@ public class StoredServerChannel {
 
     /** Clears a handler that was connected with setConnectedHandler. */
     void clearConnectedHandler() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
 
         try {
             this.connectedHandler = null;
@@ -115,7 +114,7 @@ public class StoredServerChannel {
 
     /** Returns the connectedHandler or null */
     PaymentChannelServer getConnectedHandler() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             return connectedHandler;
         } finally {
@@ -125,7 +124,7 @@ public class StoredServerChannel {
 
     /** Sets the close transaction or null if there no close transactions has been detected.*/
     void setCloseTransaction(Transaction close) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             this.close = close;
         } finally {
@@ -135,7 +134,7 @@ public class StoredServerChannel {
 
     /** Returns the close transaction or null if there no close transactions has been detected.*/
     Transaction getCloseTransaction() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             return close;
         } finally {
@@ -152,7 +151,7 @@ public class StoredServerChannel {
      * @param broadcaster The {@link TransactionBroadcaster} which will be used to broadcast contract/payment transactions.
      */
     public PaymentChannelServerState getOrCreateState(Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
-        Threading.lockPrintFail(lock);
+        lock.lock();
 
         try {
             if (state == null) {
@@ -176,7 +175,7 @@ public class StoredServerChannel {
 
     @Override
     public String toString() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
 
         try {
             final String newline = String.format(Locale.US, "%n");

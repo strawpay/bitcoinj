@@ -201,7 +201,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
 
     private void removeChannel(Sha256Hash contractHash) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         final StoredServerChannel channel;
         try {
             channel = mapChannels.remove(contractHash);
@@ -235,7 +235,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * Gets the {@link StoredServerChannel} with the given channel id (ie contract transaction hash).
      */
     public StoredServerChannel getChannel(Sha256Hash id) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             return mapChannels.get(id);
         } finally {
@@ -247,7 +247,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * Get a copy of all {@link StoredServerChannel}s
      */
     public Map<Sha256Hash, StoredServerChannel> getChannelMap() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             return ImmutableMap.copyOf(mapChannels);
         } finally {
@@ -273,7 +273,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * channel is already present in the set of channels.</p>
      */
     public void putChannel(final StoredServerChannel channel) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             checkArgument(mapChannels.put(channel.contract.getHash(), checkNotNull(channel)) == null);
             // Add the difference between real time and Utils.now() so that test-cases can use a mock clock.
@@ -311,7 +311,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
     @Override
     public byte[] serializeWalletExtension() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             final NetworkParameters params = getNetworkParameters();
             // If we haven't attached to a wallet yet we can't check against network parameters
@@ -355,7 +355,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
     @Override
     public void deserializeWalletExtension(Wallet containingWallet, byte[] data) throws Exception {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             this.wallet = containingWallet;
             ServerState.StoredServerPaymentChannels states = ServerState.StoredServerPaymentChannels.parseFrom(data);
@@ -395,7 +395,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
 
     @Override
     public String toString() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             StringBuilder buf = new StringBuilder();
             for (StoredServerChannel stored : mapChannels.values()) {

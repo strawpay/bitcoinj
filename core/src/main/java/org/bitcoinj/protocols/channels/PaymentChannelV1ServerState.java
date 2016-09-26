@@ -124,7 +124,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      * @throws VerificationException If the transaction isnt valid or did not meet the requirements of a refund transaction.
      */
     public byte[] provideRefundTransaction(Transaction refundTx, byte[] clientMultiSigPubKey) throws VerificationException {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             checkNotNull(refundTx);
             checkNotNull(clientMultiSigPubKey);
@@ -192,7 +192,7 @@ public class PaymentChannelV1ServerState extends PaymentChannelServerState {
      * lock time.
      */
     public long getRefundTransactionUnlockTime() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             checkState(getState().compareTo(State.WAITING_FOR_MULTISIG_CONTRACT) > 0 && getState() != State.ERROR);
             return refundTransactionUnlockTimeSecs;

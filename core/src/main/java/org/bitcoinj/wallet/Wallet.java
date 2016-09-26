@@ -4725,9 +4725,9 @@ public class Wallet extends BaseTaggableObject
      * @param lockAfterWalletLock a lock that is locked after the wallet is locked.
      * */
     public void lockWalletAndThen(ReentrantLock lockAfterWalletLock) {
-        Threading.lockPrintFail(lock);
-        Threading.lockPrintFail(keyChainGroupLock);
-        Threading.lockPrintFail(lockAfterWalletLock);
+        lock.lock();
+        keyChainGroupLock.lock();
+        lockAfterWalletLock.lock();
     }
 
     /**

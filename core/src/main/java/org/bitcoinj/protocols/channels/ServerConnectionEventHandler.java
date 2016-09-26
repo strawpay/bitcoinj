@@ -39,7 +39,7 @@ public abstract class ServerConnectionEventHandler {
     // Called by ServerListener before channelOpen to set connectionChannel when it is ready to received application messages
     // Also called with null to clear connectionChannel after channelClosed()
     void setConnectionChannel(@Nullable ProtobufConnection<Protos.TwoWayChannelMessage> connectionChannel) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             this.connectionChannel = connectionChannel;
         } finally {
@@ -62,7 +62,7 @@ public abstract class ServerConnectionEventHandler {
     // formally returning MessageLite-derived class that cannot be statically guaranteed to be the same MessageType
     // that is used in connectionChannel.
     protected final void closeChannel() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             if (connectionChannel == null)
                 throw new IllegalStateException("Channel is not fully initialized/has already been closed");

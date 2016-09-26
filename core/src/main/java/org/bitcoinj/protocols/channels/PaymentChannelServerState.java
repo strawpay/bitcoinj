@@ -163,7 +163,7 @@ public abstract class PaymentChannelServerState {
     public abstract int getMajorVersion();
 
     public State getState() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             return stateMachine.getState();
         } finally {
@@ -245,7 +245,7 @@ public abstract class PaymentChannelServerState {
 
     // Create a payment transaction with valueToMe going back to us
     protected SendRequest makeUnsignedChannelContract(Coin valueToMe) {
-        Threading.lockPrintFail(lock);
+        lock.lock();
 
         try {
             Transaction tx = new Transaction(wallet.getParams());
@@ -489,7 +489,7 @@ public abstract class PaymentChannelServerState {
      * Gets the highest payment to ourselves (which we will receive on settle(), not including fees)
      */
     public Coin getBestValueToMe() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             return bestValueToMe;
         } finally {
@@ -501,7 +501,7 @@ public abstract class PaymentChannelServerState {
      * Gets the fee paid in the final payment transaction (only available if settle() did not throw an exception)
      */
     public Coin getFeePaid() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             stateMachine.checkState(State.CLOSED, State.CLOSING);
             return feePaidForPayment;
@@ -514,7 +514,7 @@ public abstract class PaymentChannelServerState {
      * Gets the multisig contract which was used to initialize this channel
      */
     public Transaction getContract() {
-        Threading.lockPrintFail(lock);
+        lock.lock();
         try {
             checkState(contract != null);
             return contract;
