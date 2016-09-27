@@ -44,4 +44,5 @@ message StoredServerPaymentChannel {
 	optional uint32 majorVersion = 7 [default = 1];
 	// Protocol version 2 only - the P2SH hash doesn't contain the required key
 	optional bytes clientKey = 8;
+	optional bytes closeTransaction = 9;
 }

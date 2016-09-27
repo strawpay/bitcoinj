@@ -126,53 +126,59 @@ public class PaymentChannelV1ClientState extends PaymentChannelClientState {
      * @throws InsufficientMoneyException if the wallet doesn't contain enough balance to initiate
      */
     @Override
-    public synchronized void initiate(@Nullable KeyParameter userKey, ClientChannelProperties clientChannelProperties) throws ValueOutOfRangeException, InsufficientMoneyException {
-        final NetworkParameters params = wallet.getParams();
-        Transaction template = new Transaction(params);
-        // We always place the client key before the server key because, if either side wants some privacy, they can
-        // use a fresh key for the the multisig contract and nowhere else
-        List<ECKey> keys = Lists.newArrayList(myKey, serverKey);
-        // There is also probably a change output, but we don't bother shuffling them as it's obvious from the
-        // format which one is the change. If we start obfuscating the change output better in future this may
-        // be worth revisiting.
-        TransactionOutput multisigOutput = template.addOutput(totalValue, ScriptBuilder.createMultiSigOutputScript(2, keys));
-        if (multisigOutput.isDust())
-            throw new ValueOutOfRangeException("totalValue too small to use");
-        SendRequest req = SendRequest.forTx(template);
-        req.coinSelector = AllowUnconfirmedCoinSelector.get();
-        req.shuffleOutputs = false;   // TODO: Fix things so shuffling is usable.
-        req = clientChannelProperties.modifyContractSendRequest(req);
-        if (userKey != null) req.aesKey = userKey;
-        wallet.completeTx(req);
-        Coin multisigFee = req.tx.getFee();
-        multisigContract = req.tx;
-        // Build a refund transaction that protects us in the case of a bad server that's just trying to cause havoc
-        // by locking up peoples money (perhaps as a precursor to a ransom attempt). We time lock it so the server
-        // has an assurance that we cannot take back our money by claiming a refund before the channel closes - this
-        // relies on the fact that since Bitcoin 0.8 time locked transactions are non-final. This will need to change
-        // in future as it breaks the intended design of timelocking/tx replacement, but for now it simplifies this
-        // specific protocol somewhat.
-        refundTx = new Transaction(params);
-        // don't disable lock time. the sequence will be included in the server's signature and thus won't be changeable.
-        // by using this sequence value, we avoid extra full replace-by-fee and relative lock time processing.
-        refundTx.addInput(multisigOutput).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
-        refundTx.setLockTime(expiryTime);
-        if (Context.get().isEnsureMinRequiredFee()) {
-            // Must pay min fee.
-            final Coin valueAfterFee = totalValue.subtract(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
-            if (Transaction.MIN_NONDUST_OUTPUT.compareTo(valueAfterFee) > 0)
+    public void initiate(@Nullable KeyParameter userKey, ClientChannelProperties clientChannelProperties) throws ValueOutOfRangeException, InsufficientMoneyException {
+        try {
+            lock.lock();
+
+            final NetworkParameters params = wallet.getParams();
+            Transaction template = new Transaction(params);
+            // We always place the client key before the server key because, if either side wants some privacy, they can
+            // use a fresh key for the the multisig contract and nowhere else
+            List<ECKey> keys = Lists.newArrayList(myKey, serverKey);
+            // There is also probably a change output, but we don't bother shuffling them as it's obvious from the
+            // format which one is the change. If we start obfuscating the change output better in future this may
+            // be worth revisiting.
+            TransactionOutput multisigOutput = template.addOutput(totalValue, ScriptBuilder.createMultiSigOutputScript(2, keys));
+            if (multisigOutput.isDust())
                 throw new ValueOutOfRangeException("totalValue too small to use");
-            refundTx.addOutput(valueAfterFee, myKey.toAddress(params));
-            refundFees = multisigFee.add(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
-        } else {
-            refundTx.addOutput(totalValue, myKey.toAddress(params));
-            refundFees = multisigFee;
+            SendRequest req = SendRequest.forTx(template);
+            req.coinSelector = AllowUnconfirmedCoinSelector.get();
+            req.shuffleOutputs = false;   // TODO: Fix things so shuffling is usable.
+            req = clientChannelProperties.modifyContractSendRequest(req);
+            if (userKey != null) req.aesKey = userKey;
+            wallet.completeTx(req);
+            Coin multisigFee = req.tx.getFee();
+            multisigContract = req.tx;
+            // Build a refund transaction that protects us in the case of a bad server that's just trying to cause havoc
+            // by locking up peoples money (perhaps as a precursor to a ransom attempt). We time lock it so the server
+            // has an assurance that we cannot take back our money by claiming a refund before the channel closes - this
+            // relies on the fact that since Bitcoin 0.8 time locked transactions are non-final. This will need to change
+            // in future as it breaks the intended design of timelocking/tx replacement, but for now it simplifies this
+            // specific protocol somewhat.
+            refundTx = new Transaction(params);
+            // don't disable lock time. the sequence will be included in the server's signature and thus won't be changeable.
+            // by using this sequence value, we avoid extra full replace-by-fee and relative lock time processing.
+            refundTx.addInput(multisigOutput).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
+            refundTx.setLockTime(expiryTime);
+            if (wallet.getContext().isEnsureMinRequiredFee()) {
+                // Must pay min fee.
+                final Coin valueAfterFee = totalValue.subtract(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
+                if (Transaction.MIN_NONDUST_OUTPUT.compareTo(valueAfterFee) > 0)
+                    throw new ValueOutOfRangeException("totalValue too small to use");
+                refundTx.addOutput(valueAfterFee, myKey.toAddress(params));
+                refundFees = multisigFee.add(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
+            } else {
+                refundTx.addOutput(totalValue, myKey.toAddress(params));
+                refundFees = multisigFee;
+            }
+            refundTx.getConfidence().setSource(TransactionConfidence.Source.SELF);
+            log.info("initiated channel with multi-sig contract {}, refund {}", multisigContract.getHashAsString(),
+                    refundTx.getHashAsString());
+            stateMachine.transition(State.INITIATED);
+            // Client should now call getIncompleteRefundTransaction() and send it to the server.
+        } finally {
+            lock.unlock();
         }
-        refundTx.getConfidence().setSource(TransactionConfidence.Source.SELF);
-        log.info("initiated channel with multi-sig contract {}, refund {}", multisigContract.getHashAsString(),
-                refundTx.getHashAsString());
-        stateMachine.transition(State.INITIATED);
-        // Client should now call getIncompleteRefundTransaction() and send it to the server.
     }
 
     /**
@@ -181,26 +187,50 @@ public class PaymentChannelV1ClientState extends PaymentChannelClientState {
      * start paying the server.
      */
     @Override
-    public synchronized Transaction getContract() {
-        checkState(multisigContract != null);
-        if (stateMachine.getState() == State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER) {
-            stateMachine.transition(State.READY);
+    public Transaction getContract() {
+        try {
+            lock.lock();
+
+            checkState(multisigContract != null);
+            if (stateMachine.getState() == State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER) {
+                stateMachine.transition(State.READY);
+            }
+            return multisigContract;
+        } finally {
+            lock.unlock();
         }
-        return multisigContract;
     }
 
     @Override
-    protected synchronized Transaction getContractInternal() {
-        return multisigContract;
+    protected Transaction getContractInternal() {
+        try {
+            lock.lock();
+
+            return multisigContract;
+        } finally {
+            lock.unlock();
+        }
     }
 
-    protected synchronized Script getContractScript() {
-        return multisigScript;
+    protected Script getContractScript() {
+        try {
+            lock.lock();
+
+            return multisigScript;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     protected Script getSignedScript() {
-        return getContractScript();
+        try {
+            lock.lock();
+
+            return getContractScript();
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -208,12 +238,18 @@ public class PaymentChannelV1ClientState extends PaymentChannelClientState {
      * has checked it out and provided its own signature, call
      * {@link PaymentChannelV1ClientState#provideRefundSignature(byte[], KeyParameter)} with the result.
      */
-    public synchronized Transaction getIncompleteRefundTransaction() {
-        checkState(refundTx != null);
-        if (stateMachine.getState() == State.INITIATED) {
-            stateMachine.transition(State.WAITING_FOR_SIGNED_REFUND);
+    public Transaction getIncompleteRefundTransaction() {
+        try {
+            lock.lock();
+
+            checkState(refundTx != null);
+            if (stateMachine.getState() == State.INITIATED) {
+                stateMachine.transition(State.WAITING_FOR_SIGNED_REFUND);
+            }
+            return refundTx;
+        } finally {
+            lock.unlock();
         }
-        return refundTx;
     }
 
     /**
@@ -225,60 +261,86 @@ public class PaymentChannelV1ClientState extends PaymentChannelClientState {
      * transaction are automatically committed to wallet so that it can handle broadcasting the refund transaction at
      * the appropriate time if necessary.</p>
      */
-    public synchronized void provideRefundSignature(byte[] theirSignature, @Nullable KeyParameter userKey)
+    public void provideRefundSignature(byte[] theirSignature, @Nullable KeyParameter userKey)
             throws VerificationException {
-        checkNotNull(theirSignature);
-        stateMachine.checkState(State.WAITING_FOR_SIGNED_REFUND);
-        TransactionSignature theirSig = TransactionSignature.decodeFromBitcoin(theirSignature, true);
-        if (theirSig.sigHashMode() != Transaction.SigHash.NONE || !theirSig.anyoneCanPay())
-            throw new VerificationException("Refund signature was not SIGHASH_NONE|SIGHASH_ANYONECANPAY");
-        // Sign the refund transaction ourselves.
-        final TransactionOutput multisigContractOutput = multisigContract.getOutput(0);
         try {
-            multisigScript = multisigContractOutput.getScriptPubKey();
-        } catch (ScriptException e) {
-            throw new RuntimeException(e);  // Cannot happen: we built this ourselves.
+            lock.lock();
+
+            checkNotNull(theirSignature);
+            stateMachine.checkState(State.WAITING_FOR_SIGNED_REFUND);
+            TransactionSignature theirSig = TransactionSignature.decodeFromBitcoin(theirSignature, true);
+            if (theirSig.sigHashMode() != Transaction.SigHash.NONE || !theirSig.anyoneCanPay())
+                throw new VerificationException("Refund signature was not SIGHASH_NONE|SIGHASH_ANYONECANPAY");
+            // Sign the refund transaction ourselves.
+            final TransactionOutput multisigContractOutput = multisigContract.getOutput(0);
+            try {
+                multisigScript = multisigContractOutput.getScriptPubKey();
+            } catch (ScriptException e) {
+                throw new RuntimeException(e);  // Cannot happen: we built this ourselves.
+            }
+            TransactionSignature ourSignature =
+                    refundTx.calculateSignature(0, myKey.maybeDecrypt(userKey),
+                            multisigScript, Transaction.SigHash.ALL, false);
+            // Insert the signatures.
+            Script scriptSig = ScriptBuilder.createMultiSigInputScript(ourSignature, theirSig);
+            log.info("Refund scriptSig: {}", scriptSig);
+            log.info("Multi-sig contract scriptPubKey: {}", multisigScript);
+            TransactionInput refundInput = refundTx.getInput(0);
+            refundInput.setScriptSig(scriptSig);
+            refundInput.verify(multisigContractOutput);
+            stateMachine.transition(State.SAVE_STATE_IN_WALLET);
+        } finally {
+            lock.unlock();
         }
-        TransactionSignature ourSignature =
-                refundTx.calculateSignature(0, myKey.maybeDecrypt(userKey),
-                        multisigScript, Transaction.SigHash.ALL, false);
-        // Insert the signatures.
-        Script scriptSig = ScriptBuilder.createMultiSigInputScript(ourSignature, theirSig);
-        log.info("Refund scriptSig: {}", scriptSig);
-        log.info("Multi-sig contract scriptPubKey: {}", multisigScript);
-        TransactionInput refundInput = refundTx.getInput(0);
-        refundInput.setScriptSig(scriptSig);
-        refundInput.verify(multisigContractOutput);
-        stateMachine.transition(State.SAVE_STATE_IN_WALLET);
     }
 
     @Override
-    protected synchronized Coin getValueToMe() {
-        return valueToMe;
+    protected Coin getValueToMe() {
+        try {
+            lock.lock();
+            return valueToMe;
+        } finally {
+            lock.unlock();
+        }
     }
 
-    protected long getExpiryTime() {
-        return expiryTime;
+    protected long getExpiryTime() { return expiryTime; }
+
+    @Override
+    @VisibleForTesting void doStoreChannelInWallet(Sha256Hash id) {
+        try {
+            lock.lock();
+
+            StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
+                    wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+            checkNotNull(channels, "You have not added the StoredPaymentChannelClientStates extension to the wallet.");
+            checkState(channels.getChannel(id, multisigContract.getHash()) == null);
+            storedChannel = new StoredClientChannel(getMajorVersion(), id, multisigContract, refundTx, myKey, serverKey, valueToMe, refundFees, 0, true);
+            channels.putChannel(storedChannel);
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    @VisibleForTesting synchronized void doStoreChannelInWallet(Sha256Hash id) {
-        StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
-                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
-        checkNotNull(channels, "You have not added the StoredPaymentChannelClientStates extension to the wallet.");
-        checkState(channels.getChannel(id, multisigContract.getHash()) == null);
-        storedChannel = new StoredClientChannel(getMajorVersion(), id, multisigContract, refundTx, myKey, serverKey, valueToMe, refundFees, 0, true);
-        channels.putChannel(storedChannel);
-    }
+    public Coin getRefundTxFees() {
+        try {
+            lock.lock();
 
-    @Override
-    public synchronized Coin getRefundTxFees() {
-        checkState(getState().compareTo(State.NEW) > 0);
-        return refundFees;
+            checkState(getState().compareTo(State.NEW) > 0);
+            return refundFees;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @VisibleForTesting Transaction getRefundTransaction() {
-        return refundTx;
+        try {
+            lock.lock();
+            return refundTx;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -286,9 +348,14 @@ public class PaymentChannelV1ClientState extends PaymentChannelClientState {
      * {@link PaymentChannelV1ClientState#provideRefundSignature(byte[], KeyParameter)} then this
      * method can be called to receive the now valid and broadcastable refund transaction.
      */
-    public synchronized Transaction getCompletedRefundTransaction() {
-        checkState(getState().compareTo(State.WAITING_FOR_SIGNED_REFUND) > 0);
-        return refundTx;
+    public Transaction getCompletedRefundTransaction() {
+        try {
+            lock.lock();
+            checkState(getState().compareTo(State.WAITING_FOR_SIGNED_REFUND) > 0);
+            return refundTx;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**

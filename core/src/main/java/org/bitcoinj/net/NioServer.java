@@ -38,6 +38,7 @@ public class NioServer extends AbstractExecutionThreadService {
 
     private final ServerSocketChannel sc;
     @VisibleForTesting final Selector selector;
+    private final int port;
 
     // Handle a SelectionKey which was selected
     private void handleKey(Selector selector, SelectionKey key) throws IOException {
@@ -72,6 +73,7 @@ public class NioServer extends AbstractExecutionThreadService {
         sc = ServerSocketChannel.open();
         sc.configureBlocking(false);
         sc.socket().bind(bindAddress);
+        port = sc.socket().getLocalPort();
         selector = SelectorProvider.provider().openSelector();
         sc.register(selector, SelectionKey.OP_ACCEPT);
     }
@@ -129,5 +131,9 @@ public class NioServer extends AbstractExecutionThreadService {
     public void triggerShutdown() {
         // Wake up the selector and let the selection thread break its loop as the ExecutionService !isRunning()
         selector.wakeup();
+    }
+
+    public int getPort() {
+        return port;
     }
 }

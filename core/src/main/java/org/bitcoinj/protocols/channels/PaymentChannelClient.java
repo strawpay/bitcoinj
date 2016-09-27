@@ -518,6 +518,8 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                 // point (like watching it for confirmations). The tx has been checked by now for syntactical validity
                 // and that it correctly spends the multisig contract.
                 wallet.receivePending(settleTx, null);
+            } else if (state != null) {
+                log.warn("CLOSE message settlement field does not look like settlement tx {}", settleTx.getHash());
             }
         } else {
             log.info("CLOSE message received without settlement tx");

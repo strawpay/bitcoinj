@@ -26,6 +26,7 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.script.Script;
 import org.bitcoinj.script.ScriptBuilder;
+import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.SendRequest;
 import org.bitcoinj.wallet.Wallet;
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
+import javax.annotation.OverridingMethodsMustInvokeSuper;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Locale;
@@ -42,20 +44,19 @@ import java.util.Locale;
  * instead of multisig transactions.
  */
 public class PaymentChannelV2ServerState extends PaymentChannelServerState {
-    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV1ServerState.class);
-
-    // The total value locked into the CLTV output and the value to us in the last signature the client provided
-    private Coin feePaidForPayment;
+    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV2ServerState.class);
 
     // The client key for the multi-sig contract
     // We currently also use the serverKey for payouts, but this is not required
     protected ECKey clientKey;
 
-    PaymentChannelV2ServerState(StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
+    PaymentChannelV2ServerState(final StoredServerChannel storedServerChannel, Wallet wallet, TransactionBroadcaster broadcaster) throws VerificationException {
         super(storedServerChannel, wallet, broadcaster);
-        synchronized (storedServerChannel) {
-            this.clientKey = storedServerChannel.clientKey;
+        this.clientKey = storedServerChannel.clientKey;
+        if (storedServerChannel.getCloseTransaction() == null) {
             stateMachine.transition(State.READY);
+        } else {
+            stateMachine.transition(State.CLOSED);
         }
     }
 
@@ -68,6 +69,7 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
     public Multimap<State, State> getStateTransitions() {
         Multimap<State, State> result = MultimapBuilder.enumKeys(State.class).arrayListValues().build();
         result.put(State.UNINITIALISED, State.READY);
+        result.put(State.UNINITIALISED, State.CLOSED);
         result.put(State.UNINITIALISED, State.WAITING_FOR_MULTISIG_CONTRACT);
         result.put(State.WAITING_FOR_MULTISIG_CONTRACT, State.WAITING_FOR_MULTISIG_ACCEPTANCE);
         result.put(State.WAITING_FOR_MULTISIG_ACCEPTANCE, State.READY);
@@ -91,12 +93,6 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
 
     public void provideClientKey(byte[] clientKey) {
         this.clientKey = ECKey.fromPublicOnly(clientKey);
-    }
-
-    @Override
-    public synchronized Coin getFeePaid() {
-        stateMachine.checkState(State.CLOSED, State.CLOSING);
-        return feePaidForPayment;
     }
 
     @Override
@@ -133,6 +129,12 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
         return clientKey;
     }
 
+    @Override
+     void signInput(Transaction tx, Transaction.SigHash hashType,
+                            boolean anyoneCanPay, @Nullable KeyParameter userKey) {
+        signP2SHInput(tx, hashType, anyoneCanPay, userKey);
+    }
+
     // Signs the first input of the transaction which must spend the multisig contract.
     private void signP2SHInput(Transaction tx, Transaction.SigHash hashType,
                                boolean anyoneCanPay, @Nullable KeyParameter userKey) {
@@ -140,82 +142,5 @@ public class PaymentChannelV2ServerState extends PaymentChannelServerState {
         byte[] mySig = signature.encodeToBitcoin();
         Script scriptSig = ScriptBuilder.createCLTVPaymentChannelP2SHInput(bestValueSignature, mySig, createP2SHRedeemScript());
         tx.getInput(0).setScriptSig(scriptSig);
-    }
-
-    final SettableFuture<Transaction> closedFuture = SettableFuture.create();
-
-    @Override
-    public synchronized ListenableFuture<Transaction> close(@Nullable KeyParameter userKey) throws InsufficientMoneyException {
-        if (storedServerChannel != null) {
-            StoredServerChannel temp = storedServerChannel;
-            storedServerChannel = null;
-            StoredPaymentChannelServerStates channels = (StoredPaymentChannelServerStates)
-                    wallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID);
-            channels.closeChannel(temp); // May call this method again for us (if it wasn't the original caller)
-            if (getState().compareTo(State.CLOSING) >= 0)
-                return closedFuture;
-        }
-
-        if (getState().ordinal() < State.READY.ordinal()) {
-            log.error("Attempt to settle channel in state " + getState());
-            stateMachine.transition(State.CLOSED);
-            closedFuture.set(null);
-            return closedFuture;
-        }
-        if (getState() != State.READY) {
-            // TODO: What is this codepath for?
-            log.warn("Failed attempt to settle a channel in state " + getState());
-            return closedFuture;
-        }
-        Transaction tx = null;
-        try {
-            SendRequest req = makeUnsignedChannelContract(bestValueToMe);
-            tx = req.tx;
-            // Provide a throwaway signature so that completeTx won't complain out about unsigned inputs it doesn't
-            // know how to sign. Note that this signature does actually have to be valid, so we can't use a dummy
-            // signature to save time, because otherwise completeTx will try to re-sign it to make it valid and then
-            // die. We could probably add features to the SendRequest API to make this a bit more efficient.
-            signP2SHInput(tx, Transaction.SigHash.NONE, true, userKey);
-            // Let wallet handle adding additional inputs/fee as necessary.
-            req.shuffleOutputs = false;
-            req.missingSigsMode = Wallet.MissingSigsMode.USE_DUMMY_SIG;
-            wallet.completeTx(req);  // TODO: Fix things so shuffling is usable.
-            feePaidForPayment = req.tx.getFee();
-            log.info("Calculated fee is {}", feePaidForPayment);
-            if (feePaidForPayment.compareTo(bestValueToMe) > 0) {
-                final String msg = String.format(Locale.US, "Had to pay more in fees (%s) than the channel was worth (%s)",
-                        feePaidForPayment, bestValueToMe);
-                throw new InsufficientMoneyException(feePaidForPayment.subtract(bestValueToMe), msg);
-            }
-            // Now really sign the multisig input.
-            signP2SHInput(tx, Transaction.SigHash.ALL, false, userKey);
-            // Some checks that shouldn't be necessary but it can't hurt to check.
-            tx.verify();  // Sanity check syntax.
-            for (TransactionInput input : tx.getInputs())
-                input.verify();  // Run scripts and ensure it is valid.
-        } catch (InsufficientMoneyException e) {
-            throw e;  // Don't fall through.
-        } catch (Exception e) {
-            log.error("Could not verify self-built tx\nMULTISIG {}\nCLOSE {}", contract, tx != null ? tx : "");
-            throw new RuntimeException(e);  // Should never happen.
-        }
-        stateMachine.transition(State.CLOSING);
-        log.info("Closing channel, broadcasting tx {}", tx);
-        // The act of broadcasting the transaction will add it to the wallet.
-        ListenableFuture<Transaction> future = broadcaster.broadcastTransaction(tx).future();
-        Futures.addCallback(future, new FutureCallback<Transaction>() {
-            @Override public void onSuccess(Transaction transaction) {
-                log.info("TX {} propagated, channel successfully closed.", transaction.getHash());
-                stateMachine.transition(State.CLOSED);
-                closedFuture.set(transaction);
-            }
-
-            @Override public void onFailure(Throwable throwable) {
-                log.error("Failed to settle channel, could not broadcast: {}", throwable);
-                stateMachine.transition(State.ERROR);
-                closedFuture.setException(throwable);
-            }
-        });
-        return closedFuture;
     }
 }

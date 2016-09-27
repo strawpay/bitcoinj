@@ -16,16 +16,19 @@
 
 package org.bitcoinj.protocols.channels;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
+import com.google.protobuf.ByteString;
+import net.jcip.annotations.GuardedBy;
 import org.bitcoinj.core.*;
 import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
 import org.bitcoinj.wallet.WalletExtension;
-
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.util.concurrent.SettableFuture;
-import com.google.protobuf.ByteString;
-import net.jcip.annotations.GuardedBy;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
@@ -106,25 +109,106 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * <p>Removes the given channel from this set of {@link StoredServerChannel}s and notifies the wallet of a change to
      * this wallet extension.</p>
      */
-    public void closeChannel(StoredServerChannel channel) {
+    public void closeChannel(final StoredServerChannel storedServerChannel) {
+
+        // Lock and find out if we need state, then unlock and lock again to respect lock order !
+        final PaymentChannelServer connectedHandler = storedServerChannel.getConnectedHandler();
+        if (connectedHandler != null)
+            connectedHandler.close();
+
+        final Transaction close = storedServerChannel.getCloseTransaction();
+        final boolean hasCloseTx = close != null;
+
+        // now we can lock first on state if we need to use it.
+        if (hasCloseTx) {
+            log.debug("Channel was already closed {} ", storedServerChannel.contract.getHash());
+            if (close.getConfidence(wallet.getContext().getConfidenceTable()).getDepthInBlocks() == 0) {
+                log.debug("Broadcasting unconfirmed close again {} ", close.getHash());
+                getBroadcaster().broadcastTransaction(close);
+            }
+            watchTxConfirmations(storedServerChannel.contract.getHash(), close);
+        } else {
+            log.debug("Channel not closed yet {} ", storedServerChannel.contract.getHash());
+            final PaymentChannelServerState state = storedServerChannel.getOrCreateState(wallet, getBroadcaster());
+            try {
+                state.close();
+                storedServerChannel.setCloseTransaction(state.closeTx);
+                if (state.closeTx != null) {
+                    watchTxConfirmations(storedServerChannel.contract.getHash(), state.closeTx);
+                }
+            } catch (InsufficientMoneyException e) {
+                log.error("Exception when closing channel", e);
+                removeChannel(storedServerChannel.contract.getHash());
+            }
+         }
+
+        // Check independent of other things if contract is settled somehow, remove channel later (when settle is deep in chain).
+        checkIfSettled(storedServerChannel.contract.getHash());
+        updatedChannel(storedServerChannel);
+    }
+
+    private boolean checkIfSettled(final Sha256Hash contractHash) {
+        log.debug("checkIfSettled contract={}", contractHash);
+
+        final Transaction contract = wallet.getTransaction(contractHash);
+        if (contract != null) {
+            if (!contract.getOutput(0).isAvailableForSpending()) {
+                log.debug("contract.getOutput(0).isMine(wallet) {}", contract.getOutput(0).isMine(wallet));
+                log.debug("contract.getOutput(0).isWatched(wallet) {}", contract.getOutput(0).isWatched(wallet));
+                log.debug("contract.getOutput(0).getParentTransactionDepthInBlocks() {}", contract.getOutput(0).getParentTransactionDepthInBlocks());
+
+                final Transaction settle = contract.getOutput(0).getSpentBy().getParentTransaction();
+                if (settle == null) {
+                    log.warn("No settle tx found when contract={} getOutput(0).isAvailableForSpending = false", contractHash);
+                    return false;
+                } else {
+                    watchTxConfirmations(contractHash, settle);
+                    return true;
+                }
+            } else {
+                log.debug("contract {} getOutput(0).isAvailableForSpending=true", contractHash);
+                return false;
+            }
+        } else {
+            log.warn("No tx found in wallet for contract={}", contractHash);
+            return false;
+        }
+    }
+
+    private void watchTxConfirmations(final Sha256Hash contractHash, final Transaction settle) {
+        final TransactionConfidence confidence = settle.getConfidence(wallet.getContext().getConfidenceTable());
+        int numConfirms = wallet.getContext().getEventHorizon();
+        log.info("Watching contract {} settling with {} of depth = {}, waiting for depth {}",
+                contractHash, settle.getHashAsString(),
+                confidence.getDepthInBlocks(), numConfirms);
+
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.USER_THREAD);
+        Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
+            @Override
+            public void onSuccess(TransactionConfidence result) {
+                log.info("Deleting channel from wallet: {} when tx {} is safely confirmed, depth = {}",
+                        contractHash, settle.getHashAsString(), result.getDepthInBlocks());
+                removeChannel(contractHash);
+            }
+
+            @Override
+            public void onFailure(Throwable t) {
+                Throwables.propagate(t);
+            }
+        });
+    }
+
+
+
+    private void removeChannel(Sha256Hash contractHash) {
         lock.lock();
+        final StoredServerChannel channel;
         try {
-            if (mapChannels.remove(channel.contract.getHash()) == null)
+            channel = mapChannels.remove(contractHash);
+            if (channel == null)
                 return;
         } finally {
             lock.unlock();
-        }
-        synchronized (channel) {
-            channel.closeConnectedHandler();
-            try {
-                TransactionBroadcaster broadcaster = getBroadcaster();
-                channel.getOrCreateState(wallet, broadcaster).close();
-            } catch (InsufficientMoneyException e) {
-                log.error("Exception when closing channel", e);
-            } catch (VerificationException e) {
-                log.error("Exception when closing channel", e);
-            }
-            channel.state = null;
         }
         updatedChannel(channel);
     }
@@ -176,7 +260,8 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
      * wallet extension.
      */
     public void updatedChannel(final StoredServerChannel channel) {
-        log.info("Stored server channel {} was updated", channel.hashCode());
+        //log.info("Stored server channel {} was updated", channel.hashCode());
+        log.debug("Stored server channel {} was updated", channel);
         wallet.addOrUpdateExtension(this);
     }
 
@@ -233,27 +318,34 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             final boolean hasMaxMoney = params != null ? params.hasMaxMoney() : true;
             final Coin networkMaxMoney = params != null ? params.getMaxMoney() : NetworkParameters.MAX_MONEY;
             ServerState.StoredServerPaymentChannels.Builder builder = ServerState.StoredServerPaymentChannels.newBuilder();
-            for (StoredServerChannel channel : mapChannels.values()) {
-                // First a few asserts to make sure things won't break
-                // TODO: Pull MAX_MONEY from network parameters
-                checkState(channel.bestValueToMe.signum() >= 0 && 
-                        (!hasMaxMoney || channel.bestValueToMe.compareTo(networkMaxMoney) <= 0));
-                checkState(channel.refundTransactionUnlockTimeSecs > 0);
-                checkNotNull(channel.myKey.getPrivKeyBytes());
-                ServerState.StoredServerPaymentChannel.Builder channelBuilder = ServerState.StoredServerPaymentChannel.newBuilder()
-                        .setMajorVersion(channel.majorVersion)
-                        .setBestValueToMe(channel.bestValueToMe.value)
-                        .setRefundTransactionUnlockTimeSecs(channel.refundTransactionUnlockTimeSecs)
-                        .setContractTransaction(ByteString.copyFrom(channel.contract.unsafeBitcoinSerialize()))
-                        .setMyKey(ByteString.copyFrom(channel.myKey.getPrivKeyBytes()));
-                if (channel.majorVersion == 1) {
-                    channelBuilder.setClientOutput(ByteString.copyFrom(channel.clientOutput.unsafeBitcoinSerialize()));
-                } else {
-                    channelBuilder.setClientKey(ByteString.copyFrom(channel.clientKey.getPubKey()));
+            for (final StoredServerChannel ch : mapChannels.values()) {
+                ch.lock.lock();
+                try {
+                    // First a few asserts to make sure things won't break
+                    // TODO: Pull MAX_MONEY from network parameters
+                    checkState(ch.bestValueToMe.signum() >= 0 &&
+                            (!hasMaxMoney || ch.bestValueToMe.compareTo(networkMaxMoney) <= 0));
+                    checkState(ch.refundTransactionUnlockTimeSecs > 0);
+                    checkNotNull(ch.myKey.getPrivKeyBytes());
+                    ServerState.StoredServerPaymentChannel.Builder channelBuilder = ServerState.StoredServerPaymentChannel.newBuilder()
+                            .setMajorVersion(ch.majorVersion)
+                            .setBestValueToMe(ch.bestValueToMe.value)
+                            .setRefundTransactionUnlockTimeSecs(ch.refundTransactionUnlockTimeSecs)
+                            .setContractTransaction(ByteString.copyFrom(ch.contract.unsafeBitcoinSerialize()))
+                            .setMyKey(ByteString.copyFrom(ch.myKey.getPrivKeyBytes()));
+                    if (ch.majorVersion == 1) {
+                        channelBuilder.setClientOutput(ByteString.copyFrom(ch.clientOutput.unsafeBitcoinSerialize()));
+                    } else {
+                        channelBuilder.setClientKey(ByteString.copyFrom(ch.clientKey.getPubKey()));
+                    }
+                    if (ch.bestValueSignature != null)
+                        channelBuilder.setBestValueSignature(ByteString.copyFrom(ch.bestValueSignature));
+                    if (ch.getCloseTransaction() != null)
+                        channelBuilder.setCloseTransaction(ByteString.copyFrom(ch.getCloseTransaction().unsafeBitcoinSerialize()));
+                    builder.addChannels(channelBuilder);
+                } finally {
+                    ch.lock.unlock();
                 }
-                if (channel.bestValueSignature != null)
-                    channelBuilder.setBestValueSignature(ByteString.copyFrom(channel.bestValueSignature));
-                builder.addChannels(channelBuilder);
             }
             return builder.build().toByteArray();
         } finally {
@@ -277,10 +369,18 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 } else {
                     clientKey = ECKey.fromPublicOnly(storedState.getClientKey().toByteArray());
                 }
+                final Transaction contract, close;
+                {
+                    contract = params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray());
+                    close = storedState.hasCloseTransaction() ?
+                            params.getDefaultSerializer().makeTransaction(storedState.getCloseTransaction().toByteArray()) :
+                            null;
+                }
                 StoredServerChannel channel = new StoredServerChannel(null,
                         majorVersion,
-                        params.getDefaultSerializer().makeTransaction(storedState.getContractTransaction().toByteArray()),
+                        contract,
                         clientOutput,
+                        close,
                         storedState.getRefundTransactionUnlockTimeSecs(),
                         ECKey.fromPrivate(storedState.getMyKey().toByteArray()),
                         clientKey,

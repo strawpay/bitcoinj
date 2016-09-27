@@ -4719,6 +4719,30 @@ public class Wallet extends BaseTaggableObject
     //region Extensions to the wallet format.
 
     /**
+     * Locks the wallet lock and then the supplied lock.  This is typically used from extensions
+     * that needs to lock its own lock while calling the wallet.
+     * This will ensure the lock order  respects the Wallet -> Extension ordering.
+     * @param lockAfterWalletLock a lock that is locked after the wallet is locked.
+     * */
+    public void lockWalletAndThen(ReentrantLock lockAfterWalletLock) {
+        lock.lock();
+        keyChainGroupLock.lock();
+        lockAfterWalletLock.lock();
+    }
+
+    /**
+     * Unlocks the supplied lock and then wallet lock.  This is typically used from extensions
+     * that needs to lock its own lock while calling the wallet.
+     * This will ensure the lock order respects the Wallet -> Extension ordering.
+     * @param unlockBeforeWalletLock a lock that is unlocked before the wallet is unlocked.
+     * */
+    public void unlockLockAndThenWallet(ReentrantLock unlockBeforeWalletLock) {
+        unlockBeforeWalletLock.unlock();
+        keyChainGroupLock.unlock();
+        lock.unlock();
+    }
+
+    /**
      * By providing an object implementing the {@link WalletExtension} interface, you can save and load arbitrary
      * additional data that will be stored with the wallet. Each extension is identified by an ID, so attempting to
      * add the same extension twice (or two different objects that use the same ID) will throw an IllegalStateException.

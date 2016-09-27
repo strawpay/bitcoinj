@@ -42,7 +42,7 @@ import static com.google.common.base.Preconditions.checkState;
  * instead of multisig transactions.
  */
 public class PaymentChannelV2ClientState extends PaymentChannelClientState {
-    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV1ClientState.class);
+    private static final Logger log = LoggerFactory.getLogger(PaymentChannelV2ClientState.class);
 
     // How much value (in satoshis) is locked up into the channel.
     private final Coin totalValue;
@@ -100,61 +100,81 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
     }
 
     @Override
-    public synchronized void initiate(@Nullable KeyParameter userKey, ClientChannelProperties clientChannelProperties) throws ValueOutOfRangeException, InsufficientMoneyException {
-        final NetworkParameters params = wallet.getParams();
-        Transaction template = new Transaction(params);
-        // There is also probably a change output, but we don't bother shuffling them as it's obvious from the
-        // format which one is the change. If we start obfuscating the change output better in future this may
-        // be worth revisiting.
-        Script redeemScript =
-                ScriptBuilder.createCLTVPaymentChannelOutput(BigInteger.valueOf(expiryTime), myKey, serverKey);
-        TransactionOutput transactionOutput = template.addOutput(totalValue,
-                ScriptBuilder.createP2SHOutputScript(redeemScript));
-        if (transactionOutput.isDust())
-            throw new ValueOutOfRangeException("totalValue too small to use");
-        SendRequest req = SendRequest.forTx(template);
-        req.coinSelector = AllowUnconfirmedCoinSelector.get();
-        req.shuffleOutputs = false;   // TODO: Fix things so shuffling is usable.
-        req = clientChannelProperties.modifyContractSendRequest(req);
-        if (userKey != null) req.aesKey = userKey;
-        wallet.completeTx(req);
-        Coin multisigFee = req.tx.getFee();
-        contract = req.tx;
+    public void initiate(@Nullable KeyParameter userKey, ClientChannelProperties clientChannelProperties) throws ValueOutOfRangeException, InsufficientMoneyException {
+        try {
+            lock.lock();
 
-        // Build a refund transaction that protects us in the case of a bad server that's just trying to cause havoc
-        // by locking up peoples money (perhaps as a precursor to a ransom attempt). We time lock it because the
-        // CheckLockTimeVerify opcode requires a lock time to be specified and the input to have a non-final sequence
-        // number (so that the lock time is not disabled).
-        refundTx = new Transaction(params);
-        // by using this sequence value, we avoid extra full replace-by-fee and relative lock time processing.
-        refundTx.addInput(contract.getOutput(0)).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
-        refundTx.setLockTime(expiryTime);
-        if (Context.get().isEnsureMinRequiredFee()) {
-            // Must pay min fee.
-            final Coin valueAfterFee = totalValue.subtract(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
-            if (Transaction.MIN_NONDUST_OUTPUT.compareTo(valueAfterFee) > 0)
+            final NetworkParameters params = wallet.getParams();
+            Transaction template = new Transaction(params);
+            // There is also probably a change output, but we don't bother shuffling them as it's obvious from the
+            // format which one is the change. If we start obfuscating the change output better in future this may
+            // be worth revisiting.
+            Script redeemScript =
+                    ScriptBuilder.createCLTVPaymentChannelOutput(BigInteger.valueOf(expiryTime), myKey, serverKey);
+            TransactionOutput transactionOutput = template.addOutput(totalValue,
+                    ScriptBuilder.createP2SHOutputScript(redeemScript));
+            if (transactionOutput.isDust())
                 throw new ValueOutOfRangeException("totalValue too small to use");
-            refundTx.addOutput(valueAfterFee, myKey.toAddress(params));
-            refundFees = multisigFee.add(Transaction.REFERENCE_DEFAULT_MIN_TX_FEE);
-        } else {
-            refundTx.addOutput(totalValue, myKey.toAddress(params));
-            refundFees = multisigFee;
+            SendRequest req = SendRequest.forTx(template);
+            req.coinSelector = AllowUnconfirmedCoinSelector.get();
+            req.shuffleOutputs = false;   // TODO: Fix things so shuffling is usable.
+            req = clientChannelProperties.modifyContractSendRequest(req);
+            if (userKey != null) req.aesKey = userKey;
+            wallet.completeTx(req);
+            Coin multisigFee = req.tx.getFee();
+            contract = req.tx;
+
+            // Build a refund transaction that protects us in the case of a bad server that's just trying to cause havoc
+            // by locking up peoples money (perhaps as a precursor to a ransom attempt). We time lock it because the
+            // CheckLockTimeVerify opcode requires a lock time to be specified and the input to have a non-final sequence
+            // number (so that the lock time is not disabled).
+            refundTx = new Transaction(params);
+            // by using this sequence value, we avoid extra full replace-by-fee and relative lock time processing.
+            refundTx.addInput(contract.getOutput(0)).setSequenceNumber(TransactionInput.NO_SEQUENCE - 1L);
+            refundTx.setLockTime(expiryTime);
+            if (wallet.getContext().isEnsureMinRequiredFee()) {
+                // Calculate fee
+                final Coin useFee;
+                {
+                    final Coin feePerKb = wallet.getContext().getFeePerKb();
+                    final Coin minFee = Transaction.REFERENCE_DEFAULT_MIN_TX_FEE;
+                    final Coin fee = feePerKb.div(3); // Guess refund Tx is less than < 1/3 kb.
+
+                    useFee = fee.isLessThan(minFee) ? minFee : fee;
+                }
+                final Coin valueAfterFee = totalValue.subtract(useFee);
+                if (Transaction.MIN_NONDUST_OUTPUT.compareTo(valueAfterFee) > 0)
+                    throw new ValueOutOfRangeException("totalValue too small to use");
+                refundTx.addOutput(valueAfterFee, myKey.toAddress(params));
+                refundFees = multisigFee.add(useFee);
+            } else {
+                refundTx.addOutput(totalValue, myKey.toAddress(params));
+                refundFees = multisigFee;
+            }
+
+            TransactionSignature refundSignature =
+                    refundTx.calculateSignature(0, myKey.maybeDecrypt(userKey),
+                            getSignedScript(), Transaction.SigHash.ALL, false);
+            refundTx.getInput(0).setScriptSig(ScriptBuilder.createCLTVPaymentChannelP2SHRefund(refundSignature, redeemScript));
+
+            refundTx.getConfidence().setSource(TransactionConfidence.Source.SELF);
+            log.debug("Built refund transaction {}", refundTx);
+            log.info("initiated channel with contract {}", contract.getHashAsString());
+            stateMachine.transition(State.SAVE_STATE_IN_WALLET);
+            // Client should now call getIncompleteRefundTransaction() and send it to the server.
+        } finally {
+            lock.unlock();
         }
-
-        TransactionSignature refundSignature =
-                refundTx.calculateSignature(0, myKey.maybeDecrypt(userKey),
-                        getSignedScript(), Transaction.SigHash.ALL, false);
-        refundTx.getInput(0).setScriptSig(ScriptBuilder.createCLTVPaymentChannelP2SHRefund(refundSignature, redeemScript));
-
-        refundTx.getConfidence().setSource(TransactionConfidence.Source.SELF);
-        log.info("initiated channel with contract {}", contract.getHashAsString());
-        stateMachine.transition(State.SAVE_STATE_IN_WALLET);
-        // Client should now call getIncompleteRefundTransaction() and send it to the server.
     }
 
     @Override
-    protected synchronized Coin getValueToMe() {
-        return valueToMe;
+    protected Coin getValueToMe() {
+        try {
+            lock.lock();
+            return valueToMe;
+        } finally {
+            lock.unlock();
+        }
     }
 
     protected long getExpiryTime() {
@@ -162,46 +182,81 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
     }
 
     @Override
-    public synchronized Transaction getContract() {
-        checkState(contract != null);
-        if (stateMachine.getState() == State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER) {
-            stateMachine.transition(State.READY);
+    public Transaction getContract() {
+        try {
+            lock.lock();
+            checkState(contract != null);
+            if (stateMachine.getState() == State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER) {
+                stateMachine.transition(State.READY);
+            }
+            return contract;
+        } finally {
+            lock.unlock();
         }
-        return contract;
     }
 
     @Override
-    protected synchronized Transaction getContractInternal() {
-        return contract;
+    protected Transaction getContractInternal() {
+        try {
+            lock.lock();
+            return contract;
+        } finally {
+            lock.unlock();
+        }
     }
 
-    protected synchronized Script getContractScript() {
-        return contract.getOutput(0).getScriptPubKey();
+    protected Script getContractScript() {
+        try {
+            lock.lock();
+            return contract.getOutput(0).getScriptPubKey();
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
     protected Script getSignedScript() {
-        return ScriptBuilder.createCLTVPaymentChannelOutput(BigInteger.valueOf(expiryTime), myKey, serverKey);
+        try {
+            lock.lock();
+            return ScriptBuilder.createCLTVPaymentChannelOutput(BigInteger.valueOf(expiryTime), myKey, serverKey);
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    public synchronized Coin getRefundTxFees() {
-        checkState(getState().compareTo(State.NEW) > 0);
-        return refundFees;
+    public Coin getRefundTxFees() {
+        try {
+            lock.lock();
+            checkState(getState().compareTo(State.NEW) > 0);
+            return refundFees;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @VisibleForTesting Transaction getRefundTransaction() {
-        return refundTx;
+        try {
+            lock.lock();
+            return refundTx;
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override
-    @VisibleForTesting synchronized void doStoreChannelInWallet(Sha256Hash id) {
-        StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
-                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
-        checkNotNull(channels, "You have not added the StoredPaymentChannelClientStates extension to the wallet.");
-        checkState(channels.getChannel(id, contract.getHash()) == null);
-        storedChannel = new StoredClientChannel(getMajorVersion(), id, contract, refundTx, myKey, serverKey, valueToMe, refundFees, expiryTime, true);
-        channels.putChannel(storedChannel);
+    @VisibleForTesting void doStoreChannelInWallet(Sha256Hash id) {
+        try {
+            lock.lock();
+            StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
+                    wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+            checkNotNull(channels, "You have not added the StoredPaymentChannelClientStates extension to the wallet.");
+            checkState(channels.getChannel(id, contract.getHash()) == null);
+            storedChannel = new StoredClientChannel(getMajorVersion(), id, contract, refundTx, myKey, serverKey, valueToMe, refundFees, expiryTime, true);
+            channels.putChannel(storedChannel);
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override

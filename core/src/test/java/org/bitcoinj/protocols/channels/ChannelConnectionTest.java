@@ -16,9 +16,12 @@
 
 package org.bitcoinj.protocols.channels;
 
+import com.google.common.base.Throwables;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelClient.VersionSelector;
+import org.bitcoinj.store.MemoryBlockStore;
 import org.bitcoinj.testing.TestWithWallet;
+import org.bitcoinj.utils.BriefLogFormatter;
 import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
 import org.bitcoinj.wallet.WalletExtension;
@@ -32,9 +35,12 @@ import com.google.protobuf.ByteString;
 import org.bitcoin.paymentchannel.Protos;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
@@ -57,7 +63,11 @@ import static org.junit.Assert.*;
 
 @RunWith(Parameterized.class)
 public class ChannelConnectionTest extends TestWithWallet {
+    private static final Logger log = LoggerFactory.getLogger(ChannelConnectionTest.class);
+
     private static final int CLIENT_MAJOR_VERSION = 1;
+    final Context context = new Context(PARAMS, 3, Coin.ZERO, false); // Shorter event horizon for unit tests.
+
     private Wallet serverWallet;
     private AtomicBoolean fail;
     private BlockingQueue<Transaction> broadcasts;
@@ -110,13 +120,24 @@ public class ChannelConnectionTest extends TestWithWallet {
     @Override
     @Before
     public void setUp() throws Exception {
-        super.setUp();
+        BriefLogFormatter.init();
+        Context.propagate(context);
+
+        wallet = new Wallet(context);
+        myKey = wallet.currentReceiveKey();
+        myAddress = myKey.toAddress(context.getParams());
+        blockStore = new MemoryBlockStore(context.getParams());
+        chain = new BlockChain(context, wallet, blockStore);
+
+
         Utils.setMockClock(); // Use mock clock
-        Context.propagate(new Context(PARAMS, 3, Coin.ZERO, false)); // Shorter event horizon for unit tests.
+        log.debug("Setting context {} in thread {}", Context.get(), java.lang.Thread.currentThread());
+        System.out.println("Setting context = " + Context.get().getEventHorizon() + " thread = " + java.lang.Thread.currentThread());
+
         sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, COIN);
         sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, COIN);
         wallet.addExtension(new StoredPaymentChannelClientStates(wallet, failBroadcaster));
-        serverWallet = new Wallet(PARAMS);
+        serverWallet = new Wallet(context);
         serverWallet.addExtension(new StoredPaymentChannelServerStates(serverWallet, failBroadcaster));
         serverWallet.freshReceiveKey();
         // Use an atomic boolean to indicate failure because fail()/assert*() dont work in network threads
@@ -202,10 +223,11 @@ public class ChannelConnectionTest extends TestWithWallet {
                         };
                     }
                 });
-        server.bindAndStart(4243);
+        server.bindAndStart(0);
 
+        final int port = server.getPort();
         PaymentChannelClientConnection client = new PaymentChannelClientConnection(
-                new InetSocketAddress("localhost", 4243), 30, wallet, myKey, COIN, "", userKeySetup, clientChannelProperties);
+                new InetSocketAddress("localhost", port), 30, wallet, myKey, COIN, "", userKeySetup, clientChannelProperties);
 
         // Wait for the multi-sig tx to be transmitted.
         broadcastTxPause.release();
@@ -263,21 +285,35 @@ public class ChannelConnectionTest extends TestWithWallet {
         assertEquals(PaymentChannelServerState.State.CLOSED, serverState.getState());
         assertEquals(amount, serverState.getBestValueToMe());
         assertEquals(ZERO, serverState.getFeePaid());
-        assertTrue(channels.mapChannels.isEmpty());
+
+        // Server keeps channel until event horizon now set to 3 in setUp.
+        assertEquals(1, channels.mapChannels.size());
 
         // Send the settle TX to the client wallet.
         sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, settleTx);
+        Thread.sleep(1000);
+
         assertTrue(client.state().getState() == PaymentChannelClientState.State.CLOSED);
 
         server.close();
         server.close();
 
         // Now confirm the settle TX and see if the channel deletes itself from the wallet.
-        assertEquals(1, StoredPaymentChannelClientStates.getFromWallet(wallet).mapChannels.size());
+        assertEquals(1, StoredPaymentChannelClientStates.getFromWallet(wallet).getChannelMap().size());
         wallet.notifyNewBestBlock(createFakeBlock(blockStore, Block.BLOCK_HEIGHT_GENESIS).storedBlock);
-        assertEquals(1, StoredPaymentChannelClientStates.getFromWallet(wallet).mapChannels.size());
+        assertEquals(1, StoredPaymentChannelClientStates.getFromWallet(wallet).getChannelMap().size());
         wallet.notifyNewBestBlock(createFakeBlock(blockStore, Block.BLOCK_HEIGHT_GENESIS + 1).storedBlock);
-        assertEquals(0, StoredPaymentChannelClientStates.getFromWallet(wallet).mapChannels.size());
+
+
+//        for (int i = 1; i <= 100; i++) {
+//              wallet.notifyNewBestBlock(createFakeBlock(blockStore).storedBlock);
+//        }
+
+        Thread.sleep(1000);
+
+        // Server and client keeps channel until event horizon now set to 3 in setUp.
+        assertEquals(0, channels.mapChannels.size());
+        assertEquals(0, StoredPaymentChannelClientStates.getFromWallet(wallet).getChannelMap().size());
     }
 
     @Test
@@ -326,6 +362,7 @@ public class ChannelConnectionTest extends TestWithWallet {
 
 
     }
+
 
     @Test
     public void testServerErrorHandling_killSocketOnError() throws Exception {
@@ -464,8 +501,14 @@ public class ChannelConnectionTest extends TestWithWallet {
         pair.serverRecorder.checkNextMsg(MessageType.INITIATE);
 
         // Now reopen/resume the channel after round-tripping the wallets.
+        assertNotNull(wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID));
         wallet = roundTripClientWallet(wallet);
+        assertNotNull(wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID));
+
+        assertNotNull(serverWallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID));
         serverWallet = roundTripServerWallet(serverWallet);
+        assertNotNull(serverWallet.getExtensions().get(StoredPaymentChannelServerStates.EXTENSION_ID));
+
         clientStoredChannels =
                 (StoredPaymentChannelClientStates) wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
 
@@ -545,9 +588,25 @@ public class ChannelConnectionTest extends TestWithWallet {
             assertTrue(broadcasts.take().getOutput(0).getScriptPubKey().isPayToScriptHash());
         }
         broadcastTxPause.release();
-        assertEquals(TransactionConfidence.Source.SELF, broadcasts.take().getConfidence().getSource());
+        Transaction refund = broadcasts.take();
+        assertEquals(TransactionConfidence.Source.SELF, refund.getConfidence().getSource());
         assertTrue(broadcasts.isEmpty());
-        assertTrue(newClientStates.mapChannels.isEmpty());
+
+        sendMoneyToWallet(AbstractBlockChain.NewBlockType.BEST_CHAIN, refund);
+
+        // refund is kept until event horizon (set to 3 in setUp)
+        assertEquals(1, newClientStates.mapChannels.size());
+
+        // Now confirm refund and see if the channel deletes itself from the wallet.
+        wallet.notifyNewBestBlock(createFakeBlock(blockStore, Block.BLOCK_HEIGHT_GENESIS).storedBlock);
+        assertEquals(1, StoredPaymentChannelClientStates.getFromWallet(wallet).mapChannels.size());
+
+        wallet.notifyNewBestBlock(createFakeBlock(blockStore, Block.BLOCK_HEIGHT_GENESIS + 1).storedBlock);
+
+        Thread.sleep(1000);
+        assertEquals(0, StoredPaymentChannelClientStates.getFromWallet(wallet).getChannelMap().size());
+
+
         // Server also knows it's too late.
         StoredPaymentChannelServerStates serverStoredChannels = new StoredPaymentChannelServerStates(serverWallet, mockBroadcaster);
         Thread.sleep(2000);   // TODO: Fix this stupid hack.
@@ -677,7 +736,7 @@ public class ChannelConnectionTest extends TestWithWallet {
                 .setType(MessageType.INITIATE).build());
         if (useRefunds()) {
             final Protos.TwoWayChannelMessage provideRefund = pair.clientRecorder.checkNextMsg(MessageType.PROVIDE_REFUND);
-            Transaction refund = new Transaction(PARAMS, provideRefund.getProvideRefund().getTx().toByteArray());
+            Transaction refund = new Transaction(context.getParams(), provideRefund.getProvideRefund().getTx().toByteArray());
             assertEquals(myValue, refund.getOutput(0).getValue());
         } else {
             assertEquals(2, client.state().getMajorVersion());
@@ -688,7 +747,9 @@ public class ChannelConnectionTest extends TestWithWallet {
 
     @Test
     public void testEmptyWallet() throws Exception {
-        Wallet emptyWallet = new Wallet(PARAMS);
+        Wallet emptyWallet = new Wallet(context);
+        emptyWallet.addExtension(new StoredPaymentChannelClientStates(emptyWallet, failBroadcaster));
+
         emptyWallet.freshReceiveKey();
         ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);
         PaymentChannelServer server = pair.server;
@@ -865,6 +926,8 @@ public class ChannelConnectionTest extends TestWithWallet {
             server.connectionClosed();
         }
         // Now open a second channel and don't spend all of it/don't settle it.
+        Thread.sleep(1000);
+
         {
             Sha256Hash someServerId = Sha256Hash.ZERO_HASH;
             ChannelTestUtils.RecordingPair pair = ChannelTestUtils.makeRecorders(serverWallet, mockBroadcaster);

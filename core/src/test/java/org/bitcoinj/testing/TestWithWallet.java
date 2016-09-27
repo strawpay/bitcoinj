@@ -46,12 +46,15 @@ public class TestWithWallet {
 
     public void setUp() throws Exception {
         BriefLogFormatter.init();
-        Context.propagate(new Context(PARAMS, 100, Coin.ZERO, false));
-        wallet = new Wallet(PARAMS);
+
+        final Context context = new Context(PARAMS, 100, Coin.ZERO, false);
+        Context.propagate(context);
+
+        wallet = new Wallet(context);
         myKey = wallet.currentReceiveKey();
-        myAddress = myKey.toAddress(PARAMS);
-        blockStore = new MemoryBlockStore(PARAMS);
-        chain = new BlockChain(PARAMS, wallet, blockStore);
+        myAddress = myKey.toAddress(context.getParams());
+        blockStore = new MemoryBlockStore(context.getParams());
+        chain = new BlockChain(context, wallet, blockStore);
     }
 
     public void tearDown() throws Exception {

@@ -34,8 +34,10 @@ import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
 
 import javax.annotation.Nullable;
+import java.util.concurrent.locks.ReentrantLock;
 
-import static com.google.common.base.Preconditions.*;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
 /**
  * <p>A payment channel is a method of sending money to someone such that the amount of money you send can be adjusted
@@ -72,6 +74,9 @@ import static com.google.common.base.Preconditions.*;
  */
 public abstract class PaymentChannelClientState {
     private static final Logger log = LoggerFactory.getLogger(PaymentChannelClientState.class);
+
+    protected final ReentrantLock lock = Threading.lock("PaymentChannelClientState");
+
     // How much value is currently allocated to us. Starts as being same as totalValue.
     protected Coin valueToMe;
 
@@ -93,7 +98,9 @@ public abstract class PaymentChannelClientState {
     }
     protected final StateMachine<State> stateMachine;
 
-    final Wallet wallet;
+    protected final StoredPaymentChannelClientStates channels;
+    protected final Context context;
+    protected final Wallet wallet;
 
     // Both sides need a key (private in our case, public for the server) in order to manage the multisig contract
     // and transactions that spend it.
@@ -103,6 +110,9 @@ public abstract class PaymentChannelClientState {
     protected StoredClientChannel storedChannel;
 
     PaymentChannelClientState(StoredClientChannel storedClientChannel, Wallet wallet) throws VerificationException {
+        this.channels = (StoredPaymentChannelClientStates)
+                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+        this.context = wallet.getContext();
         this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
         this.wallet = checkNotNull(wallet);
         this.myKey = checkNotNull(storedClientChannel.myKey);
@@ -114,13 +124,16 @@ public abstract class PaymentChannelClientState {
     /**
      * Returns true if the tx is a valid settlement transaction.
      */
-    public synchronized boolean isSettlementTransaction(Transaction tx) {
+    public boolean isSettlementTransaction(Transaction tx) {
         try {
+            lock.lock();
             tx.verify();
             tx.getInput(0).verify(getContractInternal().getOutput(0));
             return true;
         } catch (VerificationException e) {
             return false;
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -140,6 +153,10 @@ public abstract class PaymentChannelClientState {
      */
     public PaymentChannelClientState(Wallet wallet, ECKey myKey, ECKey serverKey,
                                      Coin value, long expiryTimeInSeconds) throws VerificationException {
+        this.channels = (StoredPaymentChannelClientStates)
+                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+        this.context = wallet.getContext();
+
         this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
         this.wallet = checkNotNull(wallet);
         this.serverKey = checkNotNull(serverKey);
@@ -147,28 +164,54 @@ public abstract class PaymentChannelClientState {
         this.valueToMe = checkNotNull(value);
     }
 
-    protected synchronized void initWalletListeners() {
-        // Register a listener that watches out for the server closing the channel.
-        if (storedChannel != null && storedChannel.close != null) {
-            watchCloseConfirmations();
-        }
-        wallet.addCoinsReceivedEventListener(Threading.SAME_THREAD, new WalletCoinsReceivedEventListener() {
-            @Override
-            public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
-                synchronized (PaymentChannelClientState.this) {
-                    if (getContractInternal() == null) return;
-                    if (isSettlementTransaction(tx)) {
-                        log.info("Close: transaction {} closed contract {}", tx.getHash(), getContractInternal().getHash());
-                        // Record the fact that it was closed along with the transaction that closed it.
-                        stateMachine.transition(State.CLOSED);
-                        if (storedChannel == null) return;
-                        storedChannel.close = tx;
-                        updateChannelInWallet();
-                        watchCloseConfirmations();
+    protected void initWalletListeners() {
+        try {
+            lock.lock();
+            channels.lock();
+
+            // Register a listener that watches out for the server closing the channel.
+            log.debug("initWalletListeners{}",
+                    getContractInternal() == null ? "" : " for contract " + getContractInternal().getHashAsString());
+            if (storedChannel != null && storedChannel.close != null) {
+                watchCloseConfirmations();
+            } else if (storedChannel != null && storedChannel.expiryTimeSeconds() < Utils.currentTimeSeconds()) {
+                log.debug("Channel contract {} expired.", getContractInternal().getHashAsString());
+                //watchRefundConfirmations();
+            }
+            wallet.addCoinsReceivedEventListener(Threading.USER_THREAD, new WalletCoinsReceivedEventListener() {
+                @Override
+                public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
+                    try {
+                        lock.lock();
+                        channels.lock();
+
+                        log.debug("onCoinsReceived tx {}, storedChannel {}", tx.getHashAsString(), storedChannel);
+                        if (getContractInternal() == null) {
+                            // no contract
+                            log.debug("No contract");
+                        } else if (storedChannel != null && tx.getHash() == storedChannel.refund.getHash()) {
+                            log.warn("Detected refund transaction when active for channel {}",
+                                    getContractInternal().getHash());
+                            //watchRefundConfirmations();
+                        } else if (isSettlementTransaction(tx)) {
+                            log.info("Close: transaction {} closed contract {}", tx.getHash(), getContractInternal().getHash());
+                            // Record the fact that it was closed along with the transaction that closed it.
+                            stateMachine.transition(State.CLOSED);
+                            if (storedChannel == null) return;
+                            storedChannel.close = tx;
+                            updateChannelInWallet();
+                            watchCloseConfirmations();
+                        }
+                    } finally {
+                        channels.unlock();
+                        lock.unlock();
                     }
                 }
-            }
-        });
+            });
+        } finally {
+            channels.unlock();
+            lock.unlock();
+        }
     }
 
     protected void watchCloseConfirmations() {
@@ -176,8 +219,8 @@ public abstract class PaymentChannelClientState {
         // of this channel along with the refund tx from the wallet, because we're not going to need
         // any of that any more.
         final TransactionConfidence confidence = storedChannel.close.getConfidence();
-        int numConfirms = Context.get().getEventHorizon();
-        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.SAME_THREAD);
+        int numConfirms = wallet.getContext().getEventHorizon();
+        ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.USER_THREAD);
         Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
             @Override
             public void onSuccess(TransactionConfidence result) {
@@ -189,18 +232,28 @@ public abstract class PaymentChannelClientState {
                 Throwables.propagate(t);
             }
         });
+        log.debug("watchCloseConfirmations for {}", storedChannel.close.getHashAsString());
     }
 
-    private synchronized void deleteChannelFromWallet() {
-        log.info("Close tx has confirmed, deleting channel from wallet: {}", storedChannel);
-        StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
-                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
-        channels.removeChannel(storedChannel);
-        storedChannel = null;
+    private void deleteChannelFromWallet() {
+        try {
+            lock.lock();
+
+            log.info("Close tx has confirmed, deleting channel from wallet: {}", storedChannel);
+            channels.removeChannel(storedChannel);
+            storedChannel = null;
+        } finally {
+            lock.unlock();
+        }
     }
 
-    public synchronized State getState() {
-        return stateMachine.getState();
+    public State getState() {
+        try {
+            lock.lock();
+            return stateMachine.getState();
+        } finally {
+            lock.unlock();
+        }
     }
 
     protected abstract Multimap<State, State> getStateTransitions();
@@ -239,25 +292,35 @@ public abstract class PaymentChannelClientState {
      */
     public abstract Transaction getContract();
 
-    private synchronized Transaction makeUnsignedChannelContract(Coin valueToMe) throws ValueOutOfRangeException {
-        Transaction tx = new Transaction(wallet.getParams());
-        tx.addInput(getContractInternal().getOutput(0));
-        // Our output always comes first.
-        // TODO: We should drop myKey in favor of output key + multisig key separation
-        // (as its always obvious who the client is based on T2 output order)
-        tx.addOutput(valueToMe, myKey.toAddress(wallet.getParams()));
-        return tx;
+    private Transaction makeUnsignedChannelContract(Coin valueToMe) throws ValueOutOfRangeException {
+        try {
+            lock.lock();
+            Transaction tx = new Transaction(wallet.getParams());
+            tx.addInput(getContractInternal().getOutput(0));
+            // Our output always comes first.
+            // TODO: We should drop myKey in favor of output key + multisig key separation
+            // (as its always obvious who the client is based on T2 output order)
+            tx.addOutput(valueToMe, myKey.toAddress(wallet.getParams()));
+            return tx;
+        } finally {
+          lock.unlock();
+        }
     }
 
     /**
      * Checks if the channel is expired, setting state to {@link State#EXPIRED}, removing this channel from wallet
      * storage and throwing an {@link IllegalStateException} if it is.
      */
-    public synchronized void checkNotExpired() {
-        if (Utils.currentTimeSeconds() > getExpiryTime()) {
-            stateMachine.transition(State.EXPIRED);
-            disconnectFromChannel();
-            throw new IllegalStateException("Channel expired");
+    public void checkNotExpired() {
+        try {
+            lock.lock();
+            if (Utils.currentTimeSeconds() > getExpiryTime()) {
+                stateMachine.transition(State.EXPIRED);
+                disconnectFromChannel();
+                throw new IllegalStateException("Channel expired");
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -282,46 +345,56 @@ public abstract class PaymentChannelClientState {
      * @throws ValueOutOfRangeException If size is negative or the channel does not have sufficient money in it to
      *                                  complete this payment.
      */
-    public synchronized IncrementedPayment incrementPaymentBy(Coin size, @Nullable KeyParameter userKey)
+    public IncrementedPayment incrementPaymentBy(Coin size, @Nullable KeyParameter userKey)
             throws ValueOutOfRangeException {
-        stateMachine.checkState(State.READY);
-        checkNotExpired();
-        checkNotNull(size);  // Validity of size will be checked by makeUnsignedChannelContract.
-        if (size.signum() < 0)
-            throw new ValueOutOfRangeException("Tried to decrement payment");
-        Coin newValueToMe = getValueToMe().subtract(size);
-        if (newValueToMe.compareTo(Transaction.MIN_NONDUST_OUTPUT) < 0 && newValueToMe.signum() > 0) {
-            log.info("New value being sent back as change was smaller than minimum nondust output, sending all");
-            size = getValueToMe();
-            newValueToMe = Coin.ZERO;
+        try {
+            lock.lock();
+
+            stateMachine.checkState(State.READY);
+            checkNotExpired();
+            checkNotNull(size);  // Validity of size will be checked by makeUnsignedChannelContract.
+            if (size.signum() < 0)
+                throw new ValueOutOfRangeException("Tried to decrement payment");
+            Coin newValueToMe = getValueToMe().subtract(size);
+            if (newValueToMe.compareTo(Transaction.MIN_NONDUST_OUTPUT) < 0 && newValueToMe.signum() > 0) {
+                log.info("New value being sent back as change was smaller than minimum nondust output, sending all");
+                size = getValueToMe();
+                newValueToMe = Coin.ZERO;
+            }
+            if (newValueToMe.signum() < 0)
+                throw new ValueOutOfRangeException("Channel has too little money to pay " + size + " satoshis");
+            Transaction tx = makeUnsignedChannelContract(newValueToMe);
+            log.info("Signing new payment tx {}", tx);
+            Transaction.SigHash mode;
+            // If we spent all the money we put into this channel, we (by definition) don't care what the outputs are, so
+            // we sign with SIGHASH_NONE to let the server do what it wants.
+            if (newValueToMe.equals(Coin.ZERO))
+                mode = Transaction.SigHash.NONE;
+            else
+                mode = Transaction.SigHash.SINGLE;
+            TransactionSignature sig = tx.calculateSignature(0, myKey.maybeDecrypt(userKey), getSignedScript(), mode, true);
+            valueToMe = newValueToMe;
+            updateChannelInWallet();
+            IncrementedPayment payment = new IncrementedPayment();
+            payment.signature = sig;
+            payment.amount = size;
+            return payment;
+        } finally {
+            lock.unlock();
         }
-        if (newValueToMe.signum() < 0)
-            throw new ValueOutOfRangeException("Channel has too little money to pay " + size + " satoshis");
-        Transaction tx = makeUnsignedChannelContract(newValueToMe);
-        log.info("Signing new payment tx {}", tx);
-        Transaction.SigHash mode;
-        // If we spent all the money we put into this channel, we (by definition) don't care what the outputs are, so
-        // we sign with SIGHASH_NONE to let the server do what it wants.
-        if (newValueToMe.equals(Coin.ZERO))
-            mode = Transaction.SigHash.NONE;
-        else
-            mode = Transaction.SigHash.SINGLE;
-        TransactionSignature sig = tx.calculateSignature(0, myKey.maybeDecrypt(userKey), getSignedScript(), mode, true);
-        valueToMe = newValueToMe;
-        updateChannelInWallet();
-        IncrementedPayment payment = new IncrementedPayment();
-        payment.signature = sig;
-        payment.amount = size;
-        return payment;
     }
 
-    protected synchronized void updateChannelInWallet() {
-        if (storedChannel == null)
-            return;
-        storedChannel.valueToMe = getValueToMe();
-        StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates)
-                wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
-        channels.updatedChannel(storedChannel);
+    protected void updateChannelInWallet() {
+        try {
+            lock.lock();
+
+            if (storedChannel == null)
+                return;
+            storedChannel.valueToMe = getValueToMe();
+            channels.updatedChannel(storedChannel);
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -330,24 +403,32 @@ public abstract class PaymentChannelClientState {
      *
      * @see PaymentChannelV1ClientState#storeChannelInWallet(Sha256Hash)
      */
-    public synchronized void disconnectFromChannel() {
-        if (storedChannel == null)
-            return;
-        synchronized (storedChannel) {
-            storedChannel.active = false;
+    public void disconnectFromChannel() {
+        try {
+            lock.lock();
+            channels.lock();
+            if (storedChannel != null) storedChannel.active = false;
+        } finally {
+            channels.unlock();
+            lock.unlock();
         }
     }
 
     /**
      * Skips saving state in the wallet for testing
      */
-    @VisibleForTesting synchronized void fakeSave() {
+    @VisibleForTesting void fakeSave() {
         try {
-            wallet.commitTx(getContractInternal());
-        } catch (VerificationException e) {
-            throw new RuntimeException(e); // We created it
+            lock.lock();
+            try {
+                wallet.commitTx(getContractInternal());
+            } catch (VerificationException e) {
+                throw new RuntimeException(e); // We created it
+            }
+            stateMachine.transition(State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER);
+        } finally {
+            lock.unlock();
         }
-        stateMachine.transition(State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER);
     }
 
     @VisibleForTesting abstract void doStoreChannelInWallet(Sha256Hash id);
@@ -364,21 +445,27 @@ public abstract class PaymentChannelClientState {
      * @param id A hash providing this channel with an id which uniquely identifies this server. It does not have to be
      *           unique.
      */
-    public synchronized void storeChannelInWallet(Sha256Hash id) {
-        stateMachine.checkState(State.SAVE_STATE_IN_WALLET);
-        checkState(id != null);
-        if (storedChannel != null) {
-            checkState(storedChannel.id.equals(id));
-            return;
-        }
-        doStoreChannelInWallet(id);
-
+    public void storeChannelInWallet(Sha256Hash id) {
         try {
-            wallet.commitTx(getContractInternal());
-        } catch (VerificationException e) {
-            throw new RuntimeException(e); // We created it
+            lock.lock();
+
+            stateMachine.checkState(State.SAVE_STATE_IN_WALLET);
+            checkState(id != null);
+            if (storedChannel != null) {
+                checkState(storedChannel.id.equals(id));
+                return;
+            }
+            doStoreChannelInWallet(id);
+
+            try {
+                wallet.commitTx(getContractInternal());
+            } catch (VerificationException e) {
+                throw new RuntimeException(e); // We created it
+            }
+            stateMachine.transition(State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER);
+        } finally {
+            lock.unlock();
         }
-        stateMachine.transition(State.PROVIDE_MULTISIG_CONTRACT_TO_SERVER);
     }
 
     /**
@@ -397,16 +484,25 @@ public abstract class PaymentChannelClientState {
     /**
      * Gets the current amount refunded to us from the multisig contract (ie totalValue-valueSentToServer)
      */
-    public synchronized Coin getValueRefunded() {
-        stateMachine.checkState(State.READY);
-        return valueToMe;
+    public Coin getValueRefunded() {
+        try {
+            lock.lock();
+            return valueToMe;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * Returns the amount of money sent on this channel so far.
      */
-    public synchronized Coin getValueSpent() {
-        return getTotalValue().subtract(getValueRefunded());
+    public Coin getValueSpent() {
+        try {
+            lock.lock();
+            return getTotalValue().subtract(getValueRefunded());
+        } finally {
+            lock.unlock();
+        }
     }
 
     protected abstract Coin getValueToMe();

@@ -787,6 +787,15 @@ public final class ServerState {
      * </pre>
      */
     com.google.protobuf.ByteString getClientKey();
+
+    /**
+     * <code>optional bytes closeTransaction = 9;</code>
+     */
+    boolean hasCloseTransaction();
+    /**
+     * <code>optional bytes closeTransaction = 9;</code>
+     */
+    com.google.protobuf.ByteString getCloseTransaction();
   }
   /**
    * Protobuf type {@code paymentchannels.StoredServerPaymentChannel}
@@ -882,6 +891,11 @@ public final class ServerState {
             case 66: {
               bitField0_ |= 0x00000080;
               clientKey_ = input.readBytes();
+              break;
+            }
+            case 74: {
+              bitField0_ |= 0x00000100;
+              closeTransaction_ = input.readBytes();
               break;
             }
           }
@@ -1052,6 +1066,21 @@ public final class ServerState {
       return clientKey_;
     }
 
+    public static final int CLOSETRANSACTION_FIELD_NUMBER = 9;
+    private com.google.protobuf.ByteString closeTransaction_;
+    /**
+     * <code>optional bytes closeTransaction = 9;</code>
+     */
+    public boolean hasCloseTransaction() {
+      return ((bitField0_ & 0x00000100) == 0x00000100);
+    }
+    /**
+     * <code>optional bytes closeTransaction = 9;</code>
+     */
+    public com.google.protobuf.ByteString getCloseTransaction() {
+      return closeTransaction_;
+    }
+
     private void initFields() {
       bestValueToMe_ = 0L;
       bestValueSignature_ = com.google.protobuf.ByteString.EMPTY;
@@ -1061,6 +1090,7 @@ public final class ServerState {
       myKey_ = com.google.protobuf.ByteString.EMPTY;
       majorVersion_ = 1;
       clientKey_ = com.google.protobuf.ByteString.EMPTY;
+      closeTransaction_ = com.google.protobuf.ByteString.EMPTY;
     }
     private byte memoizedIsInitialized = -1;
     public final boolean isInitialized() {
@@ -1115,6 +1145,9 @@ public final class ServerState {
       if (((bitField0_ & 0x00000080) == 0x00000080)) {
         output.writeBytes(8, clientKey_);
       }
+      if (((bitField0_ & 0x00000100) == 0x00000100)) {
+        output.writeBytes(9, closeTransaction_);
+      }
       getUnknownFields().writeTo(output);
     }
 
@@ -1155,6 +1188,10 @@ public final class ServerState {
       if (((bitField0_ & 0x00000080) == 0x00000080)) {
         size += com.google.protobuf.CodedOutputStream
           .computeBytesSize(8, clientKey_);
+      }
+      if (((bitField0_ & 0x00000100) == 0x00000100)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBytesSize(9, closeTransaction_);
       }
       size += getUnknownFields().getSerializedSize();
       memoizedSerializedSize = size;
@@ -1293,6 +1330,8 @@ public final class ServerState {
         bitField0_ = (bitField0_ & ~0x00000040);
         clientKey_ = com.google.protobuf.ByteString.EMPTY;
         bitField0_ = (bitField0_ & ~0x00000080);
+        closeTransaction_ = com.google.protobuf.ByteString.EMPTY;
+        bitField0_ = (bitField0_ & ~0x00000100);
         return this;
       }
 
@@ -1353,6 +1392,10 @@ public final class ServerState {
           to_bitField0_ |= 0x00000080;
         }
         result.clientKey_ = clientKey_;
+        if (((from_bitField0_ & 0x00000100) == 0x00000100)) {
+          to_bitField0_ |= 0x00000100;
+        }
+        result.closeTransaction_ = closeTransaction_;
         result.bitField0_ = to_bitField0_;
         onBuilt();
         return result;
@@ -1392,6 +1435,9 @@ public final class ServerState {
         }
         if (other.hasClientKey()) {
           setClientKey(other.getClientKey());
+        }
+        if (other.hasCloseTransaction()) {
+          setCloseTransaction(other.getCloseTransaction());
         }
         this.mergeUnknownFields(other.getUnknownFields());
         return this;
@@ -1723,6 +1769,41 @@ public final class ServerState {
         return this;
       }
 
+      private com.google.protobuf.ByteString closeTransaction_ = com.google.protobuf.ByteString.EMPTY;
+      /**
+       * <code>optional bytes closeTransaction = 9;</code>
+       */
+      public boolean hasCloseTransaction() {
+        return ((bitField0_ & 0x00000100) == 0x00000100);
+      }
+      /**
+       * <code>optional bytes closeTransaction = 9;</code>
+       */
+      public com.google.protobuf.ByteString getCloseTransaction() {
+        return closeTransaction_;
+      }
+      /**
+       * <code>optional bytes closeTransaction = 9;</code>
+       */
+      public Builder setCloseTransaction(com.google.protobuf.ByteString value) {
+        if (value == null) {
+    throw new NullPointerException();
+  }
+  bitField0_ |= 0x00000100;
+        closeTransaction_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional bytes closeTransaction = 9;</code>
+       */
+      public Builder clearCloseTransaction() {
+        bitField0_ = (bitField0_ & ~0x00000100);
+        closeTransaction_ = getDefaultInstance().getCloseTransaction();
+        onChanged();
+        return this;
+      }
+
       // @@protoc_insertion_point(builder_scope:paymentchannels.StoredServerPaymentChannel)
     }
 
@@ -1756,14 +1837,15 @@ public final class ServerState {
       "\n storedserverpaymentchannel.proto\022\017paym" +
       "entchannels\"\\\n\033StoredServerPaymentChanne" +
       "ls\022=\n\010channels\030\001 \003(\0132+.paymentchannels.S" +
-      "toredServerPaymentChannel\"\346\001\n\032StoredServ" +
+      "toredServerPaymentChannel\"\200\002\n\032StoredServ" +
       "erPaymentChannel\022\025\n\rbestValueToMe\030\001 \002(\004\022" +
       "\032\n\022bestValueSignature\030\002 \001(\014\022\'\n\037refundTra" +
       "nsactionUnlockTimeSecs\030\003 \002(\004\022\033\n\023contract" +
       "Transaction\030\004 \002(\014\022\024\n\014clientOutput\030\005 \001(\014\022" +
       "\r\n\005myKey\030\006 \002(\014\022\027\n\014majorVersion\030\007 \001(\r:\0011\022" +
-      "\021\n\tclientKey\030\010 \001(\014B.\n\037org.bitcoinj.proto",
-      "cols.channelsB\013ServerState"
+      "\021\n\tclientKey\030\010 \001(\014\022\030\n\020closeTransaction\030\t",
+      " \001(\014B.\n\037org.bitcoinj.protocols.channelsB" +
+      "\013ServerState"
     };
     com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner assigner =
         new com.google.protobuf.Descriptors.FileDescriptor.    InternalDescriptorAssigner() {
@@ -1788,7 +1870,7 @@ public final class ServerState {
     internal_static_paymentchannels_StoredServerPaymentChannel_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_paymentchannels_StoredServerPaymentChannel_descriptor,
-        new java.lang.String[] { "BestValueToMe", "BestValueSignature", "RefundTransactionUnlockTimeSecs", "ContractTransaction", "ClientOutput", "MyKey", "MajorVersion", "ClientKey", });
+        new java.lang.String[] { "BestValueToMe", "BestValueSignature", "RefundTransactionUnlockTimeSecs", "ContractTransaction", "ClientOutput", "MyKey", "MajorVersion", "ClientKey", "CloseTransaction", });
   }
 
   // @@protoc_insertion_point(outer_class_scope)
