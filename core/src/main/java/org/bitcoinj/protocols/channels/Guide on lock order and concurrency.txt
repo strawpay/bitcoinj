@@ -1,0 +1,92 @@
+Lock Ordering and Concurrency Rules
+
+Here is a short description of the rules and the order in which
+threads are allowed to acquire locks, in particular relating to the
+payment channel extension.  It is important to follow these rules to
+avoid deadlocks and various thread related bugs.
+
+Some Rules for Threading and Concurrency
+
+In the current design of bitcoinj, threads need to synchronize reads
+and writes in order for the code operate correctly.  This is done by
+locking and unlocking individual objects.  Unfortunately this makes it
+very hard to reason about correctness for old and new code.  For the
+long-term the design needs some serious change (as discussed here
+https://groups.google.com/d/msg/bitcoinj/Ee8xVVEp2Wg/mU8873TKYV0J),
+but to survive for the time being we should be aware of the dangers
+and follow a few rules that are described here:
+
+1.  Follow a predefined lock ordering whenever locks are
+    acquired. (see Ordering below)
+
+2.  Avoid synchronized and use explicit lock (see 3) except for
+    methods that never call some other instance that may acquire a
+    lock.
+
+3.  Use org.bitcoinj.utils.Threading.lock to create ReentrantLock
+    instances that will detect lock orderings that could potentially
+    create cycles that lead to dead locks (violating 1.)
+
+4.  Use Threading.USER_THREAD instead of Threading.SAME_THREAD for
+    callbacks _if_ the callback handler needs to acquire locks or call
+    out to other objects that acquire locks.
+
+5.  Use the pattern 
+    
+    lock.lock(); 
+    try {
+    	...
+    	read/update state
+	...
+    } finally {
+      	lock.unlock();
+    } 
+
+6.  Be aware of what can safely be done without locking: e.g read
+    immutable values, change/read Atomic update objects,
+    read/add/remove in copy-on-write data structures.
+
+7.  Avoid introducing more locks. More locks generally makes things
+    more complex.
+
+8.  Ordering
+
+The point is that if locks are always acquired in the same order no
+cycles can exist and thus this cannot cause a deadlock. The fact that
+payment channels was designed as a WalletExtension makes this even
+more complicated. The wallet is responsible for saving extensions and
+holds its own lock while extensions are serialized.
+
+This may not be the complete set of existing orderings, but it
+represents known valid orderings of acquiring locks:
+
+Server:
+
+* Wallet.lock -> .keyChainGroupLock -> StoredPaymentChannelServerStates.lock
+
+* PaymentChannelServer.lock -> Wallet.lock
+* PaymentChannelServer.lock -> PaymentChannelServerState.lock
+* PaymentChannelServer.lock -> StoredPaymentChannelServerStates.lock
+* PaymentChannelServer.lock -> StoredServerChannel.lock
+
+* PaymentChannelServerState.lock -> StoredPaymentChannelServerStates.lock
+* PaymentChannelServerState.lock -> StoredServerChannel.lock
+
+* StoredPaymentChannelServerStates.lock -> StoredServerChannel.lock
+
+
+Client:
+
+* Wallet.lock -> .keyChainGroupLock -> StoredPaymentChannelClientStates.lock
+
+* PaymentChannelClient.lock -> Wallet.lock
+* PaymentChannelClient.lock -> PaymentChannelClientState.lock
+
+* PaymentChannelClientState.lock -> Wallet.lock
+* PaymentChannelClientState.lock -> StoredPaymentChannelClientStates.lock
+
+To strictly follow this ordering the wallet lock may be acquired
+ahead of a call to the wallet. This is done by the helper methods on wallet:
+
+    public void lockWalletAndThen(ReentrantLock lockAfterWalletLock) 
+    public void unlockLockAndThenWallet(ReentrantLock unlockBeforeWalletLock)
