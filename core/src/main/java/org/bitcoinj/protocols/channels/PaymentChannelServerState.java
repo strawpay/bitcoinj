@@ -467,7 +467,7 @@ public abstract class PaymentChannelServerState {
         });
         log.debug("close: finished");
 
-        // TODO: The close broadcast future never seem to complete, but tx gets broadcast and included in the chain.
+        // TODO: The close broadcast future never seems to complete, but tx gets broadcast and included in the chain.
         // Why? Add warning here for now.
         Threading.THREAD_POOL.submit(new Runnable() {
             @Override

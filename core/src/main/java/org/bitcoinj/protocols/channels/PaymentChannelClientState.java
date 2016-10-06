@@ -183,7 +183,6 @@ public abstract class PaymentChannelClientState {
                 watchCloseConfirmations();
             } else if (storedChannel != null && storedChannel.expiryTimeSeconds() < Utils.currentTimeSeconds()) {
                 log.debug("Channel contract {} expired.", getContractInternal().getHashAsString());
-                //watchRefundConfirmations();
             }
 
             wallet.addCoinsReceivedEventListener(Threading.USER_THREAD, new WalletCoinsReceivedEventListener() {
@@ -218,6 +217,9 @@ public abstract class PaymentChannelClientState {
                             }
                             updateChannelInWallet();
                             watchCloseConfirmations();
+
+                            // TODO this listener needs to be removed in more cases: socket close, etc.
+                            wallet.removeCoinsReceivedEventListener(this);
                         }
                     } finally {
                         lock.unlock();
