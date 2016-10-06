@@ -543,7 +543,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                             } finally {
                                 storedChannel.lock.unlock();
                             }
-                            observeConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
+                            observeFinalTxConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
                         }
                     } else if (confidence.getDepthInBlocks() >= eventHorizon) {
                         log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
@@ -553,23 +553,26 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                 }
             };
 
-            // Will detect if it turns DEAD.
-            observeConfidence(storedChannel.contract, confidenceListener, contractHash, "contract");
+
 
             final TransactionConfidence contractConfidence = storedChannel.contract.getConfidence(containingWallet.getContext());
+
+            // Will detect if it turns DEAD.
+            contractConfidence.addEventListener(Threading.USER_THREAD, confidenceListener);
+
             if (contractConfidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
                 storedChannel.overridingTx = contractConfidence.getOverridingTransaction();
                 log.warn("Channel contract {} is DEAD and overridden by {}", contractHash, storedChannel.overridingTx);
-                observeConfidence(storedChannel.overridingTx, confidenceListener, contractHash, "overriding");
+                observeFinalTxConfidence(storedChannel.overridingTx, confidenceListener, contractHash, "overriding");
             }
             // Register a listener that watches out for the server closing the channel.
             if (storedChannel.close != null) {
                 log.debug("Channel contract {} has close transaction.", contractHash);
-                observeConfidence(storedChannel.close, confidenceListener, contractHash, "existing close");
+                observeFinalTxConfidence(storedChannel.close, confidenceListener, contractHash, "existing close");
             }
             if (storedChannel.expiryTimeSeconds() < Utils.currentTimeSeconds()) {
                 log.debug("Channel contract {} has expired.", contractHash);
-                observeConfidence(storedChannel.refund, confidenceListener, contractHash, "refund");
+                observeFinalTxConfidence(storedChannel.refund, confidenceListener, contractHash, "refund");
             }
 
             Date expiryTime = new Date(storedChannel.expiryTimeSeconds() * 1000 + (System.currentTimeMillis() - Utils.currentTimeMillis()));
@@ -649,13 +652,13 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                                     tx.getHash(), isSettlementTransaction(storedChannel.contract, tx), contractHash);
                         } else if (tx.getHash() == storedChannel.refund.getHash()) {
                             log.debug("onCoinsReceived refund tx {}", tx.getHash());
-                            observeConfidence(storedChannel.refund, confidenceListener, contractHash, "refund");
+                            observeFinalTxConfidence(storedChannel.refund, confidenceListener, contractHash, "refund");
                         } else if (isSettlementTransaction(storedChannel.contract, tx)) {
                             log.info("onCoinsReceived settlement tx {} closed contract {}", tx.getHash(), contractHash);
                             // Record the fact that it was closed along with the transaction that closed it.
                             storedChannel.close = tx;
                             updatedChannel(storedChannel);
-                            observeConfidence(storedChannel.close, confidenceListener, contractHash, "detected close");
+                            observeFinalTxConfidence(storedChannel.close, confidenceListener, contractHash, "detected close");
                         }
                     } finally {
                         storedChannel.lock.unlock();
@@ -704,14 +707,14 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             }
         }
 
-        private void observeConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
+        private void observeFinalTxConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
             // When we see the transaction get enough confirmations, we can just delete the record
             // of this channel from the wallet, because we're not going to need any of that any more.
             final TransactionConfidence txConfidence = finalTx.getConfidence(containingWallet.getContext());
             final int depth = txConfidence.getDepthInBlocks();
-            log.info("Observing {} tx {} of depth = {}, for contract {}", label, finalTx.getHashAsString(), depth, contract);
+            log.info("Watching contract {} settling with {} {} of depth = {}", contract, label, finalTx.getHashAsString(), depth);
             if (depth >= eventHorizon) {
-                log.info("... execute confidence handler now as depth is beyond event horizon {}", eventHorizon);
+                log.info("... execute confidence handler as depth is beyond event horizon {}", eventHorizon);
                 Threading.USER_THREAD.execute(new Runnable() {
                     @Override
                     public void run() {
@@ -719,7 +722,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                     }
                 });
             } else {
-                log.info("... add listener.");
+                log.info("...waiting for depth {}", eventHorizon);
                 txConfidence.addEventListener(Threading.USER_THREAD, listener);
             }
         }

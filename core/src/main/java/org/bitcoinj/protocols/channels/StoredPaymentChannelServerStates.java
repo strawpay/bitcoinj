@@ -29,7 +29,6 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
 import org.bitcoinj.wallet.WalletExtension;
-import org.bitcoinj.wallet.listeners.WalletCoinsReceivedEventListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -446,7 +445,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                             } finally {
                                 storedChannel.lock.unlock();
                             }
-                            observeConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
+                            observeFinalTxConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
                         }
                     } else if (confidence.getDepthInBlocks() >= eventHorizon) {
                         log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
@@ -456,19 +455,20 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                 }
             };
 
-            // Will detect if it turns DEAD.
-            observeConfidence(storedChannel.contract, confidenceListener, contractHash, "contract");
-
             final TransactionConfidence contractConfidence = storedChannel.contract.getConfidence(wallet.getContext());
+
+            // Will detect if it turns DEAD.
+            contractConfidence.addEventListener(Threading.USER_THREAD, confidenceListener);
+
             if (contractConfidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
                 storedChannel.overridingTx = contractConfidence.getOverridingTransaction();
                 log.warn("Channel contract {} is DEAD and overridden by {}", contractHash, storedChannel.overridingTx);
-                observeConfidence(storedChannel.overridingTx, confidenceListener, contractHash, "overriding");
+                observeFinalTxConfidence(storedChannel.overridingTx, confidenceListener, contractHash, "overriding");
             }
 
             if (storedChannel.getCloseTransaction() != null) {
                 log.debug("Channel contract {} has close transaction.", contractHash);
-                observeConfidence(storedChannel.getCloseTransaction(), confidenceListener, contractHash, "existing close");
+                observeFinalTxConfidence(storedChannel.getCloseTransaction(), confidenceListener, contractHash, "existing close");
             } else if (storedChannel.refundTransactionUnlockTimeSecs < Utils.currentTimeSeconds()) {
                 log.warn("Channel contract {} has expired.", contractHash);
             }
@@ -527,14 +527,14 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             }
         }
 
-        private void observeConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
+        private void observeFinalTxConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
             // When we see the transaction get enough confirmations, we can just delete the record
             // of this channel from the wallet, because we're not going to need any of that any more.
             final TransactionConfidence txConfidence = finalTx.getConfidence(wallet.getContext());
             final int depth = txConfidence.getDepthInBlocks();
-            log.info("Observing {} tx {} of depth = {}, for contract {}", label, finalTx.getHashAsString(), depth, contract);
+            log.info("Watching contract {} settling with {} {} of depth = {}", contract, label, finalTx.getHashAsString(), depth);
             if (depth >= eventHorizon) {
-                log.info("... execute confidence handler now as depth is beyond event horizon {}", eventHorizon);
+                log.info("... execute confidence handler as depth is beyond event horizon {}", eventHorizon);
                 Threading.USER_THREAD.execute(new Runnable() {
                     @Override
                     public void run() {
@@ -542,7 +542,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                     }
                 });
             } else {
-                log.info("... add listener.");
+                log.info("...waiting for depth {}", eventHorizon);
                 txConfidence.addEventListener(Threading.USER_THREAD, listener);
             }
         }
