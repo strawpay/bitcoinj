@@ -49,10 +49,15 @@ public class StoredServerChannel {
     // Used in protocol v2 only
     ECKey clientKey;
 
+    // In-memory pointer to watch for events about transactions for this channel.
+    StoredPaymentChannelServerStates.PaymentChannelWatcher watcher;
+    Transaction overridingTx = null;
+
     // In-memory pointer to the event handler which handles this channel if the client is connected.
     // Used as a flag to prevent duplicate connections and to disconnect the channel if its expire time approaches.
     private PaymentChannelServer connectedHandler = null;
     PaymentChannelServerState state = null;
+
 
     StoredServerChannel(@Nullable PaymentChannelServerState state, int majorVersion, Transaction contract, TransactionOutput clientOutput,
                         Transaction close, long refundTransactionUnlockTimeSecs, ECKey myKey, ECKey clientKey, Coin bestValueToMe, @Nullable byte[] bestValueSignature) {
