@@ -79,7 +79,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         log.debug("Constructed with TransactionBroadcaster");
         setTransactionBroadcaster(announcePeerGroup);
         this.containingWallet = containingWallet;
-        propagateContextToTimer(containingWallet.getContext());
+        propagateContextToTimer(containingWallet);
     }
 
     /**
@@ -90,16 +90,19 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     public StoredPaymentChannelClientStates(@Nullable Wallet containingWallet) {
         log.debug("Constructed without TransactionBroadcaster");
         this.containingWallet = containingWallet;
-        propagateContextToTimer(containingWallet.getContext());
+        propagateContextToTimer(containingWallet);
     }
 
-    private void propagateContextToTimer(final Context context) {
-        channelTimeoutHandler.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                Context.propagate(context);
-            }
-        }, 0L);
+    private void propagateContextToTimer(@Nullable final Wallet wallet) {
+        if (wallet != null) {
+            final Context context = wallet.getContext();
+            channelTimeoutHandler.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    Context.propagate(context);
+                }
+            }, 0L);
+        }
     }
 
     /**
@@ -453,6 +456,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         try {
             checkState(this.containingWallet == null || this.containingWallet == containingWallet);
             this.containingWallet = containingWallet;
+            propagateContextToTimer(containingWallet);
             NetworkParameters params = containingWallet.getParams();
             ClientState.StoredClientPaymentChannels states = ClientState.StoredClientPaymentChannels.parseFrom(data);
             log.debug("deserializeWalletExtension read {} channels protobuf objects", states.getChannelsCount());
@@ -598,16 +602,15 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                             if (contract.getOutput(0).isAvailableForSpending()) {
                                 log.debug("TimerTask - contract {} expired but not settled...", contractHash);
 
-                                TransactionBroadcast contractBroadcast = peerGroup.broadcastTransaction(contract);
-                                log.debug("TimerTask - broadcasting contract {}", contractHash);
-                                observeAndLogBroadcast(contractBroadcast, "contract");
-
-                                log.debug("TimerTask - broadcasting refund {}", refundStr);
-                                try {
-                                    containingWallet.receivePending(refund, null);
-                                } catch (VerificationException e) {
-                                    throw new RuntimeException(e);   // Cannot fail to verify a tx we created ourselves.
+                                if (contractConfidence.getDepthInBlocks() < eventHorizon) {
+                                    TransactionBroadcast contractBroadcast = peerGroup.broadcastTransaction(contract);
+                                    log.debug("TimerTask - broadcasting contract {}", contractHash);
+                                    observeAndLogBroadcast(contractBroadcast, "contract");
                                 }
+
+                                // This task evaluates at expiry, so even if channel is closed, that was less than eventHorizon
+                                // ago (as then this task would be removed). Send expiry unconditionally for safety.
+                                log.debug("TimerTask - broadcasting refund {}", refundStr);
                                 TransactionBroadcast refundBroadcast = peerGroup.broadcastTransaction(refund);
                                 observeAndLogBroadcast(refundBroadcast, "refund");
                             } else {
