@@ -37,6 +37,7 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -51,8 +52,9 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     static final String EXTENSION_ID = StoredPaymentChannelClientStates.class.getName();
     static final int MAX_SECONDS_TO_WAIT_FOR_BROADCASTER_TO_BE_SET = 10;
 
-    // TODO Should match/relate to when a server closes safe amount of time before expiry
-    static final int SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL = 30 * 60;
+    // The minimum time in seconds that a selected channel should be usable before the server will need to close it.
+    static final int MIN_TIME_USABLE_CHANNEL = 30 * 60;
+    static final int DETECT_REFUNDED_AFTER_BLOCKS = 6;
 
     @GuardedBy("lock") @VisibleForTesting final HashMultimap<Sha256Hash, StoredClientChannel> mapChannels = HashMultimap.create();
     @VisibleForTesting final Timer channelTimeoutHandler = new Timer(true);
@@ -122,20 +124,41 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         return (StoredPaymentChannelClientStates) wallet.getExtensions().get(EXTENSION_ID);
     }
 
-    /** Returns the outstanding amount of money sent back to us for all channels to this server added together. */
+    /** Returns the outstanding amount of money sent back to us for all non closed non expired channels to this server added together. */
     public Coin getBalanceForServer(Sha256Hash id) {
         Coin balance = Coin.ZERO;
-        final long nowSeconds = Utils.currentTimeSeconds();
-        final long marginSeconds = SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL;
-
         lock();
         try {
             Set<StoredClientChannel> setChannels = mapChannels.get(id);
+            final long nowSeconds = Utils.currentTimeSeconds();
             for (StoredClientChannel channel : setChannels) {
                 channel.lock.lock();
                 try {
-                    if (channel.close != null || nowSeconds - channel.expiryTimeSeconds() >= marginSeconds) continue;
-                    balance = balance.add(channel.valueToMe);
+                    if (channel.close == null && !isChannelExpired(channel, nowSeconds))
+                        balance = balance.add(channel.valueToMe);
+                } finally {
+                    channel.lock.unlock();
+                }
+            }
+            return balance;
+        } finally {
+            unlock();
+        }
+    }
+
+    /** Returns the usable amount of money for payments all non closed non expired channels to this server added together. */
+    public Coin getUsableBalanceForServer(Sha256Hash id) {
+        lock();
+        try {
+            Set<StoredClientChannel> setChannels = mapChannels.get(id);
+            final long nowSeconds = Utils.currentTimeSeconds();
+            Coin balance = Coin.ZERO;
+
+            for (StoredClientChannel channel : setChannels) {
+                channel.lock.lock();
+                try {
+                    if (isChannelUsable(channel, nowSeconds))
+                        balance = balance.add(channel.valueToMe);
                 } finally {
                     channel.lock.unlock();
                 }
@@ -180,23 +203,21 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         try {
             Set<StoredClientChannel> setChannels = mapChannels.get(id);
             final long nowSeconds = Utils.currentTimeSeconds();
-            final long marginSeconds = SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL;
             for (StoredClientChannel channel : setChannels) {
                 channel.lock.lock();
                 try {
                     // Check if the channel is usable (has money, inactive) and if so, activate it.
                     log.info("Considering channel {} contract {}", channel.hashCode(), channel.contract.getHash());
-                    if (channel.close != null || channel.valueToMe.equals(Coin.ZERO) ||
-                            nowSeconds - channel.expiryTimeSeconds() >= marginSeconds) {
-                        log.info("  ... but is closed, expired or empty");
+                    if (!isChannelUsable(channel, nowSeconds)) {
+                        log.debug("  ... but is closed, soon expires, or empty");
                         continue;
                     }
                     if (!channel.active) {
-                        log.info("  ... activating");
+                        log.debug("  ... activating");
                         channel.active = true;
                         return channel;
                     }
-                    log.info("  ... but is already active");
+                    log.debug("  ... but is already active");
                 } finally {
                     channel.lock.unlock();
                 }
@@ -205,6 +226,21 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             unlock();
         }
         return null;
+    }
+
+    /** @return true if channel is not closed, valueToMe > 0, and enough time is left until server needs to close it. */
+    static private boolean isChannelUsable(StoredClientChannel channel, long nowSeconds) {
+        long serverExpireMargin = -StoredPaymentChannelServerStates.CHANNEL_EXPIRE_OFFSET;
+        checkState(serverExpireMargin > 0, "server's margin assumed  expressed as negative value");
+        long marginUntilExpiry = MIN_TIME_USABLE_CHANNEL + serverExpireMargin;
+
+        return channel.close == null && channel.valueToMe.isGreaterThan(Coin.ZERO) &&
+                channel.expiryTimeSeconds() - nowSeconds >= marginUntilExpiry;
+    }
+
+    /** @return true if channel is expired. */
+    static private boolean isChannelExpired(StoredClientChannel channel, long nowSeconds) {
+        return nowSeconds > channel.expiryTimeSeconds();
     }
 
     /**

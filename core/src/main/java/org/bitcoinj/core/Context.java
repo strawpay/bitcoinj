@@ -43,6 +43,8 @@ import static com.google.common.base.Preconditions.*;
 public class Context {
     private static final Logger log = LoggerFactory.getLogger(Context.class);
 
+    public static final int DEFAULT_EVENT_HORIZON = 100;
+
     final private TxConfidenceTable confidenceTable;
     final private NetworkParameters params;
     final private int eventHorizon;
@@ -59,7 +61,7 @@ public class Context {
         log.info("Creating bitcoinj {} context.", VersionMessage.BITCOINJ_VERSION);
         this.confidenceTable = new TxConfidenceTable();
         this.params = params;
-        this.eventHorizon = 100;
+        this.eventHorizon = DEFAULT_EVENT_HORIZON;
         this.ensureMinRequiredFee = true;
         this.feePerKb = Transaction.DEFAULT_TX_FEE;
         lastConstructed = this;
