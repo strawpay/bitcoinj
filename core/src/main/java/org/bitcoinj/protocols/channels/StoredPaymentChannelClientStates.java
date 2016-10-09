@@ -295,11 +295,17 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         lock();
         try {
             ArrayList<ClientChannelStatusView> channels = new ArrayList<ClientChannelStatusView>();
+            final long nowSeconds = Utils.currentTimeSeconds();
             for (Map.Entry<Sha256Hash, Collection<StoredClientChannel>> storedChannelsWithId : mapChannels.asMap().entrySet()) {
                 for (StoredClientChannel storedChannel : storedChannelsWithId.getValue()) {
                     storedChannel.lock.lock();
                     try {
-                        channels.add(new ClientChannelStatusView(storedChannel, confidenceTable));
+
+                        channels.add(new ClientChannelStatusView(
+                                storedChannel,
+                                isChannelUsable(storedChannel, nowSeconds),
+                                isChannelExpired(storedChannel, nowSeconds),
+                                confidenceTable));
                     } finally {
                         storedChannel.lock.unlock();
                     }

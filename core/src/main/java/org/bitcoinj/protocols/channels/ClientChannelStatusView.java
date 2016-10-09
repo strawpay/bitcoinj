@@ -15,12 +15,14 @@ public class ClientChannelStatusView {
     final public Coin valueToMe, refundFees;
     final public int contractDepth, closeDepth, refundDepth;
     final public boolean active;
+    final public boolean usable;
+    final public boolean expired;
 
     /**
      *  Reads the status from the stored channel, synchronizing on the stored channel instance.
      *  The depth status of tx:s is requested using the confidence table.
      *  */
-    ClientChannelStatusView(StoredClientChannel storedChannel, TxConfidenceTable table) {
+    ClientChannelStatusView(StoredClientChannel storedChannel, boolean usable, boolean expired, TxConfidenceTable table) {
         this.id = storedChannel.id;
         this.contract = storedChannel.contract;
         this.expiryTime = storedChannel.expiryTime;
@@ -29,6 +31,8 @@ public class ClientChannelStatusView {
         this.valueToMe = storedChannel.valueToMe;
         this.refundFees = storedChannel.refundFees;
         this.active = storedChannel.active;
+        this.usable = usable;
+        this.expired = expired;
 
         contractDepth = contract.getConfidence(table).getDepthInBlocks();
         closeDepth = close != null ? close.getConfidence(table).getDepthInBlocks() : 0;

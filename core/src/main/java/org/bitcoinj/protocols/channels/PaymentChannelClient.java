@@ -17,6 +17,7 @@
 
 package org.bitcoinj.protocols.channels;
 
+import com.google.common.collect.ImmutableList;
 import org.bitcoinj.core.*;
 import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
 import org.bitcoinj.utils.Threading;
@@ -30,6 +31,7 @@ import com.google.common.util.concurrent.SettableFuture;
 import com.google.protobuf.ByteString;
 import net.jcip.annotations.GuardedBy;
 import org.bitcoin.paymentchannel.Protos;
+import org.bitcoinj.wallet.WalletTransaction;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
 
@@ -517,7 +519,22 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                 // The wallet has a listener on it that the state object will use to do the right thing at this
                 // point (like watching it for confirmations). The tx has been checked by now for syntactical validity
                 // and that it correctly spends the multisig contract.
-                wallet.receivePending(settleTx, null);
+
+                if (wallet.isPendingTransactionRelevant(settleTx)) {
+                    wallet.receivePending(settleTx, null);
+                } else {
+                    // TODO. Is there a way to make a tx relevant and be notified to onCoinsReceived (to detect close) ?
+                    // Trust explicitly is safe if we spent everything which is probably why it is not relevant..
+                    if (state().valueToMe == Coin.ZERO) {
+                        storedChannel.lock.lock();
+                        try {
+                            storedChannel.close = settleTx;
+                        } finally {
+                            storedChannel.lock.unlock();
+                        }
+                    }
+                }
+
             } else if (state != null) {
                 log.warn("CLOSE message settlement field does not look like settlement tx {}", settleTx.getHash());
             }
