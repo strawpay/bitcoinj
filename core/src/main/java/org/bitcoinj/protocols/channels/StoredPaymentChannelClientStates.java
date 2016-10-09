@@ -477,7 +477,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                             .setValueToMe(channel.valueToMe.value)
                             .setExpiryTime(channel.expiryTime);
                     if (channel.close != null)
-                        value.setCloseTransactionHash(ByteString.copyFrom(channel.close.getHash().getBytes()));
+                        value.setCloseTransaction(ByteString.copyFrom(channel.close.unsafeBitcoinSerialize()));
                     builder.addChannels(value);
                 } finally {
                     channel.lock.unlock();
@@ -521,8 +521,20 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                         storedState.getExpiryTime(),
                         false);
                 if (storedState.hasCloseTransactionHash()) {
+                    log.debug("storedState.hasCloseTransactionHash");
+                    // Deprecated - now use closeTransaction
                     Sha256Hash closeTxHash = Sha256Hash.wrap(storedState.getCloseTransactionHash().toByteArray());
                     channel.close = containingWallet.getTransaction(closeTxHash);
+                    if (channel.close == null)
+                        log.warn("Close transactions is not in wallet!");
+                }
+                if (storedState.hasCloseTransaction()) {
+                    log.debug("storedState.hasCloseTransaction");
+                    Transaction close = params.getDefaultSerializer().makeTransaction(storedState.getCloseTransaction().toByteArray());
+
+                    Sha256Hash closeTxHash = close.getHash();
+                    Transaction closeInWallet = containingWallet.getTransaction(closeTxHash);
+                    channel.close = (closeInWallet != null) ? closeInWallet : close;
                 }
                 putChannel(channel, false);
             }
