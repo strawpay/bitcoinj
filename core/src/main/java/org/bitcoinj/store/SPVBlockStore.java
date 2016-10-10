@@ -20,6 +20,8 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.utils.*;
 import org.slf4j.*;
 
+import com.google.common.base.Charsets;
+
 import javax.annotation.*;
 import java.io.*;
 import java.nio.*;
@@ -40,12 +42,12 @@ public class SPVBlockStore implements BlockStore {
     private static final Logger log = LoggerFactory.getLogger(SPVBlockStore.class);
 
     /** The default number of headers that will be stored in the ring buffer. */
-    public static final int DEFAULT_NUM_HEADERS = 5000;
+    public static final int DEFAULT_CAPACITY = 5000;
     public static final String HEADER_MAGIC = "SPVB";
 
     protected volatile MappedByteBuffer buffer;
-    protected int numHeaders;
-    protected NetworkParameters params;
+    protected final int capacity;
+    protected final NetworkParameters params;
 
     protected ReentrantLock lock = Threading.lock("SPVBlockStore");
 
@@ -68,7 +70,7 @@ public class SPVBlockStore implements BlockStore {
     //
     // We don't care about the value in this cache. It is always notFoundMarker. Unfortunately LinkedHashSet does not
     // provide the removeEldestEntry control.
-    protected static final Object notFoundMarker = new Object();
+    private static final Object NOT_FOUND_MARKER = new Object();
     protected LinkedHashMap<Sha256Hash, Object> notFoundCache = new LinkedHashMap<Sha256Hash, Object>() {
         @Override
         protected boolean removeEldestEntry(Map.Entry<Sha256Hash, Object> entry) {
@@ -80,14 +82,28 @@ public class SPVBlockStore implements BlockStore {
     protected RandomAccessFile randomAccessFile = null;
 
     /**
-     * Creates and initializes an SPV block store. Will create the given file if it's missing. This operation
-     * will block on disk.
+     * Creates and initializes an SPV block store that can hold {@link #DEFAULT_CAPACITY} blocks. Will create the given
+     * file if it's missing. This operation will block on disk.
+     * @param file file to use for the block store
+     * @throws BlockStoreException if something goes wrong
      */
     public SPVBlockStore(NetworkParameters params, File file) throws BlockStoreException {
+        this(params, file, DEFAULT_CAPACITY);
+    }
+
+    /**
+     * Creates and initializes an SPV block store that can hold a given amount of blocks. Will create the given file if
+     * it's missing. This operation will block on disk.
+     * @param file file to use for the block store
+     * @param capacity custom capacity
+     * @throws BlockStoreException if something goes wrong
+     */
+    public SPVBlockStore(NetworkParameters params, File file, int capacity) throws BlockStoreException {
         checkNotNull(file);
         this.params = checkNotNull(params);
+        checkArgument(capacity > 0);
+        this.capacity = capacity;
         try {
-            this.numHeaders = DEFAULT_NUM_HEADERS;
             boolean exists = file.exists();
             // Set up the backing file.
             randomAccessFile = new RandomAccessFile(file, "rw");
@@ -117,7 +133,7 @@ public class SPVBlockStore implements BlockStore {
             if (exists) {
                 header = new byte[4];
                 buffer.get(header);
-                if (!new String(header, "US-ASCII").equals(HEADER_MAGIC))
+                if (!new String(header, Charsets.US_ASCII).equals(HEADER_MAGIC))
                     throw new BlockStoreException("Header bytes do not equal " + HEADER_MAGIC);
             } else {
                 initNewStore(params);
@@ -151,7 +167,7 @@ public class SPVBlockStore implements BlockStore {
 
     /** Returns the size in bytes of the file that is used to store the chain with the current parameters. */
     public final int getFileSize() {
-        return RECORD_SIZE * numHeaders + FILE_PROLOGUE_BYTES /* extra kilobyte for stuff */;
+        return RECORD_SIZE * capacity + FILE_PROLOGUE_BYTES /* extra kilobyte for stuff */;
     }
 
     @Override
@@ -214,7 +230,7 @@ public class SPVBlockStore implements BlockStore {
                 }
             } while (cursor != startingPoint);
             // Not found.
-            notFoundCache.put(hash, notFoundMarker);
+            notFoundCache.put(hash, NOT_FOUND_MARKER);
             return null;
         } catch (ProtocolException e) {
             throw new RuntimeException(e);  // Cannot happen.
