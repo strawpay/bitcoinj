@@ -62,12 +62,17 @@ public class PaymentChannelV2ClientState extends PaymentChannelClientState {
     PaymentChannelV2ClientState(StoredClientChannel storedClientChannel, Wallet wallet) throws VerificationException {
         super(storedClientChannel, wallet);
         // The PaymentChannelClientConnection handles storedClientChannel.active and ensures we aren't resuming channels
-        this.contract = checkNotNull(storedClientChannel.contract);
-        this.expiryTime = storedClientChannel.expiryTime;
-        this.totalValue = contract.getOutput(0).getValue();
-        this.valueToMe = checkNotNull(storedClientChannel.valueToMe);
-        this.refundTx = checkNotNull(storedClientChannel.refund);
-        this.refundFees = checkNotNull(storedClientChannel.refundFees);
+        storedClientChannel.lock.lock();
+        try {
+            this.contract = checkNotNull(storedClientChannel.contract);
+            this.expiryTime = storedClientChannel.expiryTime;
+            this.totalValue = contract.getOutput(0).getValue();
+            this.valueToMe = checkNotNull(storedClientChannel.valueToMe);
+            this.refundTx = checkNotNull(storedClientChannel.refund);
+            this.refundFees = checkNotNull(storedClientChannel.refundFees);
+        } finally {
+            storedClientChannel.lock.unlock();
+        }
         stateMachine.transition(State.READY);
         initWalletListeners();
     }

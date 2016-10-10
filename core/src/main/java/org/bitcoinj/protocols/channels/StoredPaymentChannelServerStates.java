@@ -29,6 +29,7 @@ import org.bitcoinj.core.*;
 import org.bitcoinj.utils.Threading;
 import org.bitcoinj.wallet.Wallet;
 import org.bitcoinj.wallet.WalletExtension;
+import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
@@ -207,6 +208,8 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             channel = mapChannels.remove(contractHash);
             if (channel == null)
                 return;
+            if (channel.watcher != null)
+                channel.watcher.removeListeners(channel);
         } finally {
             lock.unlock();
         }
@@ -276,26 +279,28 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         lock.lock();
         try {
             checkArgument(mapChannels.put(channel.contract.getHash(), checkNotNull(channel)) == null);
-            // Add the difference between real time and Utils.now() so that test-cases can use a mock clock.
-            Date autocloseTime = new Date((channel.refundTransactionUnlockTimeSecs + CHANNEL_EXPIRE_OFFSET) * 1000L
-                    + (System.currentTimeMillis() - Utils.currentTimeMillis()));
-            log.info("Scheduling channel for automatic closure at {}: {}", autocloseTime, channel);
-            channelTimeoutHandler.schedule(new TimerTask() {
-                @Override
-                public void run() {
-                    log.info("Auto-closing channel: {}", channel);
-                    try {
-                        closeChannel(channel);
-                    } catch (Exception e) {
-                        // Something went wrong closing the channel - we catch
-                        // here or else we take down the whole Timer.
-                        log.error("Auto-closing channel failed", e);
-                    }
-                }
-            }, autocloseTime);
         } finally {
             lock.unlock();
         }
+
+        // Watch this channel for various events, once the broadcaster is ready..
+        Runnable initiateWatchingChannel = new Runnable() {
+            @Override
+            public void run() {
+                channel.lock.lock();
+                try {
+                    if (mapChannels.containsKey(channel.contract.getHash()))
+                        channel.watcher = new PaymentChannelWatcher(channel);
+                    else
+                        log.info("Channel was removed before we initiated watching it!");
+                } finally {
+                    channel.lock.unlock();
+                }
+            }
+        };
+        log.debug("Waiting for peer group before initiate watching channel for expiry and txs.");
+        broadcasterFuture.addListener(initiateWatchingChannel, Threading.USER_THREAD);
+
         updatedChannel(channel);
     }
 
@@ -410,4 +415,138 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
     private @Nullable NetworkParameters getNetworkParameters() {
         return wallet != null ? wallet.getNetworkParameters() : null;
     }
+
+    /**
+     * Watch a single channel. Responsible for auto closing, detecting a dead contract, close or a refund transaction confirmations pertaining to a channel.
+     * */
+    class PaymentChannelWatcher {
+        private final Logger log = LoggerFactory.getLogger(PaymentChannelWatcher.class);
+        private final TransactionConfidence.Listener confidenceListener;
+        private final int eventHorizon = wallet.getContext().getEventHorizon();
+        private final TimerTask autoCloseTask;
+
+        private PaymentChannelWatcher(final StoredServerChannel storedChannel) {
+            final String contractHash = storedChannel.contract.getHashAsString();
+            log.debug("PaymentChannelWatcher for contract {}", contractHash);
+
+            confidenceListener = new TransactionConfidence.Listener() {
+                public void onConfidenceChanged(final TransactionConfidence confidence, ChangeReason reason) {
+                    final Sha256Hash txHash = confidence.getTransactionHash();
+                    if (txHash == storedChannel.contract.getHash()) {
+                        if (reason == ChangeReason.TYPE &&
+                                confidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
+                            storedChannel.lock.lock();
+                            try {
+                                if (storedChannel.overridingTx != null) {
+                                    // maybe a new overriding tx...
+                                    removeListenerFromTx(storedChannel.overridingTx);
+                                }
+                                storedChannel.overridingTx = confidence.getOverridingTransaction();
+                            } finally {
+                                storedChannel.lock.unlock();
+                            }
+                            observeFinalTxConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
+                        }
+                    } else if (confidence.getDepthInBlocks() >= eventHorizon) {
+                        log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
+                                contractHash, getLabel(txHash, storedChannel), txHash, confidence.getDepthInBlocks());
+                        removeChannel(storedChannel.contract.getHash());
+                    }
+                }
+            };
+
+            final TransactionConfidence contractConfidence = storedChannel.contract.getConfidence(wallet.getContext());
+
+            // Will detect if it turns DEAD.
+            contractConfidence.addEventListener(Threading.USER_THREAD, confidenceListener);
+
+            if (contractConfidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
+                storedChannel.overridingTx = contractConfidence.getOverridingTransaction();
+                log.warn("Channel contract {} is DEAD and overridden by {}", contractHash, storedChannel.overridingTx);
+                observeFinalTxConfidence(storedChannel.overridingTx, confidenceListener, contractHash, "overriding");
+            }
+
+            if (storedChannel.getCloseTransaction() != null) {
+                log.debug("Channel contract {} has close transaction.", contractHash);
+                observeFinalTxConfidence(storedChannel.getCloseTransaction(), confidenceListener, contractHash, "existing close");
+            } else if (storedChannel.refundTransactionUnlockTimeSecs < Utils.currentTimeSeconds()) {
+                log.warn("Channel contract {} has expired.", contractHash);
+            }
+
+            // Add the difference between real time and Utils.now() so that test-cases can use a mock clock.
+            Date autocloseTime = new Date((storedChannel.refundTransactionUnlockTimeSecs + CHANNEL_EXPIRE_OFFSET) * 1000L
+                    + (System.currentTimeMillis() - Utils.currentTimeMillis()));
+            log.info("Scheduling channel for automatic closure at {}: {}", autocloseTime, storedChannel);
+            autoCloseTask = new TimerTask() {
+                @Override
+                public void run() {
+                    log.info("Auto-closing channel: {}", storedChannel);
+                    try {
+                        closeChannel(storedChannel);
+                    } catch (Exception e) {
+                        // Something went wrong closing the channel - we catch
+                        // here or else we take down the whole Timer.
+                        log.error("Auto-closing channel failed", e);
+                    }
+                }
+            };
+
+            channelTimeoutHandler.schedule(autoCloseTask, autocloseTime);
+        }
+
+        void removeListeners(final StoredServerChannel channel) {
+            channel.lock.lock();
+            try {
+                boolean cancelledTimerTask = autoCloseTask.cancel();
+                if (cancelledTimerTask) log.debug("Cancelled expiry timer for contract {}", channel.contract.getHash());
+
+                removeListenerFromTx(channel.getCloseTransaction());
+                removeListenerFromTx(channel.contract);
+                removeListenerFromTx(channel.overridingTx);
+
+            } finally {
+                channel.lock.unlock();
+            }
+        }
+
+        private void removeListenerFromTx(Transaction tx) {
+            final Context context = wallet.getContext();
+            if (tx != null) {
+                boolean removed = tx.getConfidence(context).removeEventListener(confidenceListener);
+                if (removed) log.debug("Removed confidence listener from tx {}", tx.getHash());
+            }
+        }
+
+        private String getLabel(final Sha256Hash txHash, final StoredServerChannel channel) {
+            channel.lock.lock();
+            try {
+                return (channel.getCloseTransaction() != null) && channel.getCloseTransaction().getHash() == txHash ? "close" :
+                        (channel.overridingTx != null) && channel.overridingTx.getHash() == txHash ? "overriding contract" : "unknown";
+            } finally {
+                channel.lock.unlock();
+            }
+        }
+
+        private void observeFinalTxConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
+            // When we see the transaction get enough confirmations, we can just delete the record
+            // of this channel from the wallet, because we're not going to need any of that any more.
+            final TransactionConfidence txConfidence = finalTx.getConfidence(wallet.getContext());
+            final int depth = txConfidence.getDepthInBlocks();
+            log.info("Watching contract {} settling with {} {} of depth = {}", contract, label, finalTx.getHashAsString(), depth);
+            if (depth >= eventHorizon) {
+                log.info("... execute confidence handler as depth is beyond event horizon {}", eventHorizon);
+                Threading.USER_THREAD.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        listener.onConfidenceChanged(txConfidence, TransactionConfidence.Listener.ChangeReason.DEPTH);
+                    }
+                });
+            } else {
+                log.info("...waiting for depth {}", eventHorizon);
+                txConfidence.addEventListener(Threading.USER_THREAD, listener);
+            }
+        }
+    }
+
+
 }

@@ -22,6 +22,7 @@ import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.sun.org.apache.regexp.internal.RE;
 import org.bitcoinj.core.*;
 import org.bitcoinj.crypto.TransactionSignature;
 import org.bitcoinj.protocols.channels.IPaymentChannelClient.ClientChannelProperties;
@@ -115,10 +116,16 @@ public abstract class PaymentChannelClientState {
         this.context = wallet.getContext();
         this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
         this.wallet = checkNotNull(wallet);
-        this.myKey = checkNotNull(storedClientChannel.myKey);
-        this.serverKey = checkNotNull(storedClientChannel.serverKey);
         this.storedChannel = storedClientChannel;
-        this.valueToMe = checkNotNull(storedClientChannel.valueToMe);
+
+        storedChannel.lock.lock();
+        try {
+            this.myKey = checkNotNull(storedClientChannel.myKey);
+            this.serverKey = checkNotNull(storedClientChannel.serverKey);
+            this.valueToMe = checkNotNull(storedClientChannel.valueToMe);
+        } finally {
+            storedChannel.lock.unlock();
+        }
     }
 
     /**
@@ -153,10 +160,9 @@ public abstract class PaymentChannelClientState {
      */
     public PaymentChannelClientState(Wallet wallet, ECKey myKey, ECKey serverKey,
                                      Coin value, long expiryTimeInSeconds) throws VerificationException {
+        this.context = wallet.getContext();
         this.channels = (StoredPaymentChannelClientStates)
                 wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
-        this.context = wallet.getContext();
-
         this.stateMachine = new StateMachine<State>(State.UNINITIALISED, getStateTransitions());
         this.wallet = checkNotNull(wallet);
         this.serverKey = checkNotNull(serverKey);
@@ -165,10 +171,11 @@ public abstract class PaymentChannelClientState {
     }
 
     protected void initWalletListeners() {
-        try {
-            lock.lock();
-            channels.lock();
+        lock.lock();
+        final ReentrantLock channelLock = (storedChannel != null) ? storedChannel.lock : null;
+        if (channelLock != null) channelLock.lock();
 
+        try {
             // Register a listener that watches out for the server closing the channel.
             log.debug("initWalletListeners{}",
                     getContractInternal() == null ? "" : " for contract " + getContractInternal().getHashAsString());
@@ -176,15 +183,20 @@ public abstract class PaymentChannelClientState {
                 watchCloseConfirmations();
             } else if (storedChannel != null && storedChannel.expiryTimeSeconds() < Utils.currentTimeSeconds()) {
                 log.debug("Channel contract {} expired.", getContractInternal().getHashAsString());
-                //watchRefundConfirmations();
             }
+
             wallet.addCoinsReceivedEventListener(Threading.USER_THREAD, new WalletCoinsReceivedEventListener() {
                 @Override
                 public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
-                    try {
-                        lock.lock();
-                        channels.lock();
+                    lock.lock();
 
+                    if (storedChannel != null) {
+                        // synchronize changes
+                        storedChannel.lock.lock();
+                        storedChannel.lock.unlock();
+                    }
+
+                    try {
                         log.debug("onCoinsReceived tx {}, storedChannel {}", tx.getHashAsString(), storedChannel);
                         if (getContractInternal() == null) {
                             // no contract
@@ -192,24 +204,30 @@ public abstract class PaymentChannelClientState {
                         } else if (storedChannel != null && tx.getHash() == storedChannel.refund.getHash()) {
                             log.warn("Detected refund transaction when active for channel {}",
                                     getContractInternal().getHash());
-                            //watchRefundConfirmations();
                         } else if (isSettlementTransaction(tx)) {
                             log.info("Close: transaction {} closed contract {}", tx.getHash(), getContractInternal().getHash());
                             // Record the fact that it was closed along with the transaction that closed it.
                             stateMachine.transition(State.CLOSED);
                             if (storedChannel == null) return;
-                            storedChannel.close = tx;
+                            storedChannel.lock.lock();
+                            try {
+                                storedChannel.close = tx;
+                            } finally {
+                                storedChannel.lock.unlock();
+                            }
                             updateChannelInWallet();
                             watchCloseConfirmations();
+
+                            // TODO this listener needs to be removed in more cases: socket close, etc.
+                            wallet.removeCoinsReceivedEventListener(this);
                         }
                     } finally {
-                        channels.unlock();
                         lock.unlock();
                     }
                 }
             });
         } finally {
-            channels.unlock();
+            if (channelLock != null) channelLock.unlock();
             lock.unlock();
         }
     }
@@ -384,17 +402,16 @@ public abstract class PaymentChannelClientState {
         }
     }
 
-    protected void updateChannelInWallet() {
+    private void updateChannelInWallet() {
+        if (storedChannel == null)
+            return;
+        storedChannel.lock.lock();
         try {
-            lock.lock();
-
-            if (storedChannel == null)
-                return;
             storedChannel.valueToMe = getValueToMe();
-            channels.updatedChannel(storedChannel);
         } finally {
-            lock.unlock();
+            storedChannel.lock.unlock();
         }
+        channels.updatedChannel(storedChannel);
     }
 
     /**
@@ -404,12 +421,17 @@ public abstract class PaymentChannelClientState {
      * @see PaymentChannelV1ClientState#storeChannelInWallet(Sha256Hash)
      */
     public void disconnectFromChannel() {
+        lock.lock();
         try {
-            lock.lock();
-            channels.lock();
-            if (storedChannel != null) storedChannel.active = false;
+            if (storedChannel != null) {
+                storedChannel.lock.lock();
+                try {
+                    storedChannel.active = false;
+                } finally {
+                    storedChannel.lock.unlock();
+                }
+            }
         } finally {
-            channels.unlock();
             lock.unlock();
         }
     }

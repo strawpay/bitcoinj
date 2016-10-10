@@ -17,12 +17,6 @@
 
 package org.bitcoinj.protocols.channels;
 
-import org.bitcoinj.core.*;
-import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
-import org.bitcoinj.utils.Threading;
-import org.bitcoinj.wallet.SendRequest;
-import org.bitcoinj.wallet.Wallet;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
@@ -30,6 +24,11 @@ import com.google.common.util.concurrent.SettableFuture;
 import com.google.protobuf.ByteString;
 import net.jcip.annotations.GuardedBy;
 import org.bitcoin.paymentchannel.Protos;
+import org.bitcoinj.core.*;
+import org.bitcoinj.protocols.channels.PaymentChannelCloseException.CloseReason;
+import org.bitcoinj.utils.Threading;
+import org.bitcoinj.wallet.SendRequest;
+import org.bitcoinj.wallet.Wallet;
 import org.slf4j.LoggerFactory;
 import org.spongycastle.crypto.params.KeyParameter;
 
@@ -517,7 +516,29 @@ public class PaymentChannelClient implements IPaymentChannelClient {
                 // The wallet has a listener on it that the state object will use to do the right thing at this
                 // point (like watching it for confirmations). The tx has been checked by now for syntactical validity
                 // and that it correctly spends the multisig contract.
-                wallet.receivePending(settleTx, null);
+
+                if (wallet.isPendingTransactionRelevant(settleTx)) {
+                    wallet.receivePending(settleTx, null);
+                } else {
+                    log.debug("Settlement tx is not relevant, checking if channel is fully exhausted");
+                    // TODO. Is there a way to make a tx relevant and be notified to onCoinsReceived (to detect close) ?
+                    // Trust explicitly is safe if we spent everything which is probably why it is not relevant..
+                    if (state().valueToMe.equals(Coin.ZERO)) {
+                        log.debug("Exhausted - setting settleTx to detect close.");
+                        StoredClientChannel channel = state().storedChannel;
+
+                        checkNotNull(channel, "Unexpected null");
+                        channel.lock.lock();
+                        try {
+                            channel.close = settleTx;
+                        } finally {
+                            channel.lock.unlock();
+                        }
+                        StoredPaymentChannelClientStates channels = StoredPaymentChannelClientStates.getFromWallet(wallet);
+                        channels.updatedChannel(channel);
+                    }
+                }
+
             } else if (state != null) {
                 log.warn("CLOSE message settlement field does not look like settlement tx {}", settleTx.getHash());
             }
@@ -592,7 +613,7 @@ public class PaymentChannelClient implements IPaymentChannelClient {
         try {
             connectionOpen = true;
 
-            StoredPaymentChannelClientStates channels = (StoredPaymentChannelClientStates) wallet.getExtensions().get(StoredPaymentChannelClientStates.EXTENSION_ID);
+            StoredPaymentChannelClientStates channels = StoredPaymentChannelClientStates.getFromWallet(wallet);
             if (channels != null)
                 storedChannel = channels.getUsableChannelForServerID(serverId);
 

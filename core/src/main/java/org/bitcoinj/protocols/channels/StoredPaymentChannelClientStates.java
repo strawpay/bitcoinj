@@ -17,12 +17,9 @@
 package org.bitcoinj.protocols.channels;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Throwables;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
-import com.google.common.util.concurrent.FutureCallback;
-import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.protobuf.ByteString;
@@ -36,11 +33,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
-import javax.security.auth.login.Configuration;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -55,8 +52,9 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     static final String EXTENSION_ID = StoredPaymentChannelClientStates.class.getName();
     static final int MAX_SECONDS_TO_WAIT_FOR_BROADCASTER_TO_BE_SET = 10;
 
-    // TODO Should match/relate to when a server closes safe amount of time before expiry
-    static final int SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL = 30 * 60;
+    // The minimum time in seconds that a selected channel should be usable before the server will need to close it.
+    static final int MIN_TIME_USABLE_CHANNEL = 30 * 60;
+    static final int DETECT_REFUNDED_AFTER_BLOCKS = 6;
 
     @GuardedBy("lock") @VisibleForTesting final HashMultimap<Sha256Hash, StoredClientChannel> mapChannels = HashMultimap.create();
     @VisibleForTesting final Timer channelTimeoutHandler = new Timer(true);
@@ -83,6 +81,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         log.debug("Constructed with TransactionBroadcaster");
         setTransactionBroadcaster(announcePeerGroup);
         this.containingWallet = containingWallet;
+        propagateContextToTimer(containingWallet);
     }
 
     /**
@@ -93,6 +92,19 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     public StoredPaymentChannelClientStates(@Nullable Wallet containingWallet) {
         log.debug("Constructed without TransactionBroadcaster");
         this.containingWallet = containingWallet;
+        propagateContextToTimer(containingWallet);
+    }
+
+    private void propagateContextToTimer(@Nullable final Wallet wallet) {
+        if (wallet != null) {
+            final Context context = wallet.getContext();
+            channelTimeoutHandler.schedule(new TimerTask() {
+                @Override
+                public void run() {
+                    Context.propagate(context);
+                }
+            }, 0L);
+        }
     }
 
     /**
@@ -112,18 +124,44 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         return (StoredPaymentChannelClientStates) wallet.getExtensions().get(EXTENSION_ID);
     }
 
-    /** Returns the outstanding amount of money sent back to us for all channels to this server added together. */
+    /** Returns the outstanding amount of money sent back to us for all non closed non expired channels to this server added together. */
     public Coin getBalanceForServer(Sha256Hash id) {
         Coin balance = Coin.ZERO;
-        final long nowSeconds = Utils.currentTimeSeconds();
-        final long marginSeconds = SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL;
-
         lock();
         try {
             Set<StoredClientChannel> setChannels = mapChannels.get(id);
+            final long nowSeconds = Utils.currentTimeSeconds();
             for (StoredClientChannel channel : setChannels) {
-                if (channel.close != null || nowSeconds - channel.expiryTimeSeconds() >= marginSeconds) continue;
-                balance = balance.add(channel.valueToMe);
+                channel.lock.lock();
+                try {
+                    if (channel.close == null && !isChannelExpired(channel, nowSeconds))
+                        balance = balance.add(channel.valueToMe);
+                } finally {
+                    channel.lock.unlock();
+                }
+            }
+            return balance;
+        } finally {
+            unlock();
+        }
+    }
+
+    /** Returns the usable amount of money for payments all non closed non expired channels to this server added together. */
+    public Coin getUsableBalanceForServer(Sha256Hash id) {
+        lock();
+        try {
+            Set<StoredClientChannel> setChannels = mapChannels.get(id);
+            final long nowSeconds = Utils.currentTimeSeconds();
+            Coin balance = Coin.ZERO;
+
+            for (StoredClientChannel channel : setChannels) {
+                channel.lock.lock();
+                try {
+                    if (isChannelUsable(channel, nowSeconds))
+                        balance = balance.add(channel.valueToMe);
+                } finally {
+                    channel.lock.unlock();
+                }
             }
             return balance;
         } finally {
@@ -142,8 +180,13 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             final long nowSeconds = Utils.currentTimeSeconds();
             int earliestTime = Integer.MAX_VALUE;
             for (StoredClientChannel channel : setChannels) {
-                if (channel.expiryTimeSeconds() > nowSeconds)
-                    earliestTime = Math.min(earliestTime, (int) channel.expiryTimeSeconds());
+                channel.lock.lock();
+                try {
+                    if (channel.expiryTimeSeconds() > nowSeconds)
+                        earliestTime = Math.min(earliestTime, (int) channel.expiryTimeSeconds());
+                } finally {
+                    channel.lock.unlock();
+                }
             }
             return earliestTime == Integer.MAX_VALUE ? 0 : earliestTime - nowSeconds;
         } finally {
@@ -160,26 +203,44 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         try {
             Set<StoredClientChannel> setChannels = mapChannels.get(id);
             final long nowSeconds = Utils.currentTimeSeconds();
-            final long marginSeconds = SECONDS_LEFT_BEFORE_EXPIRY_TO_SELECT_CHANNEL;
             for (StoredClientChannel channel : setChannels) {
-                // Check if the channel is usable (has money, inactive) and if so, activate it.
-                log.info("Considering channel {} contract {}", channel.hashCode(), channel.contract.getHash());
-                if (channel.close != null || channel.valueToMe.equals(Coin.ZERO) ||
-                        nowSeconds - channel.expiryTimeSeconds() >= marginSeconds) {
-                    log.info("  ... but is closed, expired or empty");
-                    continue;
+                channel.lock.lock();
+                try {
+                    // Check if the channel is usable (has money, inactive) and if so, activate it.
+                    log.info("Considering channel {} contract {}", channel.hashCode(), channel.contract.getHash());
+                    if (!isChannelUsable(channel, nowSeconds)) {
+                        log.debug("  ... but is closed, soon expires, or empty");
+                        continue;
+                    }
+                    if (!channel.active) {
+                        log.debug("  ... activating");
+                        channel.active = true;
+                        return channel;
+                    }
+                    log.debug("  ... but is already active");
+                } finally {
+                    channel.lock.unlock();
                 }
-                if (!channel.active) {
-                    log.info("  ... activating");
-                    channel.active = true;
-                    return channel;
-                }
-                log.info("  ... but is already active");
             }
         } finally {
             unlock();
         }
         return null;
+    }
+
+    /** @return true if channel is not closed, valueToMe > 0, and enough time is left until server needs to close it. */
+    static private boolean isChannelUsable(StoredClientChannel channel, long nowSeconds) {
+        long serverExpireMargin = -StoredPaymentChannelServerStates.CHANNEL_EXPIRE_OFFSET;
+        checkState(serverExpireMargin > 0, "server's margin assumed  expressed as negative value");
+        long marginUntilExpiry = MIN_TIME_USABLE_CHANNEL + serverExpireMargin;
+
+        return channel.close == null && channel.valueToMe.isGreaterThan(Coin.ZERO) &&
+                channel.expiryTimeSeconds() - nowSeconds >= marginUntilExpiry;
+    }
+
+    /** @return true if channel is expired. */
+    static private boolean isChannelExpired(StoredClientChannel channel, long nowSeconds) {
+        return nowSeconds > channel.expiryTimeSeconds();
     }
 
     /**
@@ -191,8 +252,13 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         try {
             Set<StoredClientChannel> setChannels = mapChannels.get(id);
             for (StoredClientChannel channel : setChannels) {
-                if (channel.contract.getHash().equals(contractHash))
-                    return channel;
+                channel.lock.lock();
+                try {
+                    if (channel.contract.getHash().equals(contractHash))
+                        return channel;
+                } finally {
+                    channel.lock.unlock();
+                }
             }
             return null;
         } finally {
@@ -206,6 +272,14 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     public Multimap<Sha256Hash, StoredClientChannel> getChannelMap() {
         lock();
         try {
+            // lock every stored channel to ensure any changes are synchronized
+            for (Map.Entry<Sha256Hash, Collection<StoredClientChannel>> storedChannelsWithId : mapChannels.asMap().entrySet()) {
+                for (StoredClientChannel storedChannel : storedChannelsWithId.getValue()) {
+                    storedChannel.lock.lock();
+                    storedChannel.lock.unlock();
+                }
+            }
+
             return ImmutableMultimap.copyOf(mapChannels);
         } finally {
             unlock();
@@ -221,9 +295,20 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         lock();
         try {
             ArrayList<ClientChannelStatusView> channels = new ArrayList<ClientChannelStatusView>();
+            final long nowSeconds = Utils.currentTimeSeconds();
             for (Map.Entry<Sha256Hash, Collection<StoredClientChannel>> storedChannelsWithId : mapChannels.asMap().entrySet()) {
                 for (StoredClientChannel storedChannel : storedChannelsWithId.getValue()) {
-                    channels.add(new ClientChannelStatusView(storedChannel, confidenceTable));
+                    storedChannel.lock.lock();
+                    try {
+
+                        channels.add(new ClientChannelStatusView(
+                                storedChannel,
+                                isChannelUsable(storedChannel, nowSeconds),
+                                isChannelExpired(storedChannel, nowSeconds),
+                                confidenceTable));
+                    } finally {
+                        storedChannel.lock.unlock();
+                    }
                 }
             }
 
@@ -255,12 +340,14 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     // Adds this channel and optionally notifies the wallet of an update to this extension (used during deserialize)
     private void putChannel(final StoredClientChannel channel, boolean updateWallet) {
         lock();
+        channel.lock.lock();
         try {
             log.debug("putChannel {}", channel.contract.getHashAsString());
             mapChannels.put(channel.id, channel);
         } catch (Exception e) {
             log.error("putChannel failed", e);
         } finally {
+            channel.lock.unlock();
             unlock();
         }
 
@@ -269,12 +356,14 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             @Override
             public void run() {
                 lock();
+                channel.lock.lock();
                 try {
-                    // Expiry timer
-                    installExpiryTimer(channel);
-                    // Transaction Watcher
-                    watchForCloseOrRefundTx(channel);
+                    if (mapChannels.containsEntry(channel.id, channel))
+                        channel.watcher = new PaymentChannelWatcher(channel);
+                    else
+                        log.info("Channel was removed before we initiated watching it!");
                 } finally {
+                    channel.lock.unlock();
                     unlock();
                 }
             }
@@ -294,7 +383,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                     if (f.isCancelled()) {
                         log.debug("{} broadcast is cancelled", txLabel);
                     } else {
-                        log.debug("{} {} broadcasted.", txLabel, f.get().getHashAsString());
+                        log.debug("{} {} broadcast.", txLabel, f.get().getHashAsString());
                     }
                 } catch (ExecutionException e) {
                     log.error("Exception during broadcast", e);
@@ -334,6 +423,8 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
     void removeChannel(StoredClientChannel channel) {
         lock();
         try {
+            if (channel.watcher != null)
+                channel.watcher.removeListeners(channel);
             mapChannels.remove(channel.id, channel);
             updatedChannel(channel);
         } finally {
@@ -361,31 +452,36 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             final Coin networkMaxMoney = params != null ? params.getMaxMoney() : NetworkParameters.MAX_MONEY;
             ClientState.StoredClientPaymentChannels.Builder builder = ClientState.StoredClientPaymentChannels.newBuilder();
             for (StoredClientChannel channel : mapChannels.values()) {
-                // First a few asserts to make sure things won't break
-                checkState(channel.valueToMe.signum() >= 0 &&
-                        (!hasMaxMoney || channel.valueToMe.compareTo(networkMaxMoney) <= 0));
-                checkState(channel.refundFees.signum() >= 0 &&
-                        (!hasMaxMoney || channel.refundFees.compareTo(networkMaxMoney) <= 0));
-                checkNotNull(channel.myKey.getPubKey());
-                log.debug("channel.refund.getConfidence().getSource() = {}", channel.refund.getConfidence().getSource().toString());
-                if (channel.refund.getConfidence().getSource() != TransactionConfidence.Source.SELF) {
-                    log.debug("channel.refund.getConfidence().getSource() != TransactionConfidence.Source.SELF");
+                channel.lock.lock();
+                try {
+                    // First a few asserts to make sure things won't break
+                    checkState(channel.valueToMe.signum() >= 0 &&
+                            (!hasMaxMoney || channel.valueToMe.compareTo(networkMaxMoney) <= 0));
+                    checkState(channel.refundFees.signum() >= 0 &&
+                            (!hasMaxMoney || channel.refundFees.compareTo(networkMaxMoney) <= 0));
+                    checkNotNull(channel.myKey.getPubKey());
+                    if (channel.refund.getConfidence().getSource() != TransactionConfidence.Source.SELF) {
+                        // TODO it seems to occur in rare cases that source is not SELF. Figure out why.
+                        log.warn("channel.refund.getConfidence().getSource() != TransactionConfidence.Source.SELF");
+                    }
+                    checkNotNull(channel.myKey.getPubKey());
+                    final ClientState.StoredClientPaymentChannel.Builder value = ClientState.StoredClientPaymentChannel.newBuilder()
+                            .setMajorVersion(channel.majorVersion)
+                            .setId(ByteString.copyFrom(channel.id.getBytes()))
+                            .setContractTransaction(ByteString.copyFrom(channel.contract.unsafeBitcoinSerialize()))
+                            .setRefundFees(channel.refundFees.value)
+                            .setRefundTransaction(ByteString.copyFrom(channel.refund.unsafeBitcoinSerialize()))
+                            .setMyKey(ByteString.copyFrom(new byte[0])) // Not  used, but protobuf message requires
+                            .setMyPublicKey(ByteString.copyFrom(channel.myKey.getPubKey()))
+                            .setServerKey(ByteString.copyFrom(channel.serverKey.getPubKey()))
+                            .setValueToMe(channel.valueToMe.value)
+                            .setExpiryTime(channel.expiryTime);
+                    if (channel.close != null)
+                        value.setCloseTransaction(ByteString.copyFrom(channel.close.unsafeBitcoinSerialize()));
+                    builder.addChannels(value);
+                } finally {
+                    channel.lock.unlock();
                 }
-                checkNotNull(channel.myKey.getPubKey());
-                final ClientState.StoredClientPaymentChannel.Builder value = ClientState.StoredClientPaymentChannel.newBuilder()
-                        .setMajorVersion(channel.majorVersion)
-                        .setId(ByteString.copyFrom(channel.id.getBytes()))
-                        .setContractTransaction(ByteString.copyFrom(channel.contract.unsafeBitcoinSerialize()))
-                        .setRefundFees(channel.refundFees.value)
-                        .setRefundTransaction(ByteString.copyFrom(channel.refund.unsafeBitcoinSerialize()))
-                        .setMyKey(ByteString.copyFrom(new byte[0])) // Not  used, but protobuf message requires
-                        .setMyPublicKey(ByteString.copyFrom(channel.myKey.getPubKey()))
-                        .setServerKey(ByteString.copyFrom(channel.serverKey.getPubKey()))
-                        .setValueToMe(channel.valueToMe.value)
-                        .setExpiryTime(channel.expiryTime);
-                if (channel.close != null)
-                    value.setCloseTransactionHash(ByteString.copyFrom(channel.close.getHash().getBytes()));
-                builder.addChannels(value);
             }
             return builder.build().toByteArray();
         } finally {
@@ -402,6 +498,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         try {
             checkState(this.containingWallet == null || this.containingWallet == containingWallet);
             this.containingWallet = containingWallet;
+            propagateContextToTimer(containingWallet);
             NetworkParameters params = containingWallet.getParams();
             ClientState.StoredClientPaymentChannels states = ClientState.StoredClientPaymentChannels.parseFrom(data);
             log.debug("deserializeWalletExtension read {} channels protobuf objects", states.getChannelsCount());
@@ -424,8 +521,20 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                         storedState.getExpiryTime(),
                         false);
                 if (storedState.hasCloseTransactionHash()) {
+                    log.debug("storedState.hasCloseTransactionHash");
+                    // Deprecated - now use closeTransaction
                     Sha256Hash closeTxHash = Sha256Hash.wrap(storedState.getCloseTransactionHash().toByteArray());
                     channel.close = containingWallet.getTransaction(closeTxHash);
+                    if (channel.close == null)
+                        log.warn("Close transactions is not in wallet!");
+                }
+                if (storedState.hasCloseTransaction()) {
+                    log.debug("storedState.hasCloseTransaction");
+                    Transaction close = params.getDefaultSerializer().makeTransaction(storedState.getCloseTransaction().toByteArray());
+
+                    Sha256Hash closeTxHash = close.getHash();
+                    Transaction closeInWallet = containingWallet.getTransaction(closeTxHash);
+                    channel.close = (closeInWallet != null) ? closeInWallet : close;
                 }
                 putChannel(channel, false);
             }
@@ -440,8 +549,14 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
 
         try {
             StringBuilder buf = new StringBuilder("Client payment channel states:\n");
-            for (StoredClientChannel channel : mapChannels.values())
-                buf.append("  ").append(channel).append("\n");
+            for (StoredClientChannel channel : mapChannels.values()) {
+                channel.lock.lock();
+                try {
+                    buf.append("  ").append(channel).append("\n");
+                } finally {
+                    channel.lock.unlock();
+                }
+            }
             return buf.toString();
         } finally {
             unlock();
@@ -452,180 +567,218 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         return this.containingWallet != null ? this.containingWallet.getNetworkParameters() : null;
     }
 
-
-    private void installExpiryTimer(final StoredClientChannel storedChannel) {
-        Date expiryTime = new Date(storedChannel.expiryTimeSeconds() * 1000 + (System.currentTimeMillis() - Utils.currentTimeMillis()));
-        final String channelStr = storedChannel.contract.getHashAsString();
-        log.debug("installExpiryTimer for expiry at {} of channel {}", expiryTime, channelStr);
-        channelTimeoutHandler.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                lock();
-
-                final TransactionBroadcaster peerGroup;
-                final Transaction contract;
-                final String contractStr;
-                final Transaction refund;
-                final Coin valueToMe;
-                final String refundStr;
-
-                try {
-                    log.debug("TimerTask - running at {}", new Date(System.currentTimeMillis()));
-                    log.debug("TimerTask - Synchronizing on storedChannel {}", channelStr);
-                    log.debug("TimerTask - Locked storedChannel {}", channelStr);
-
-                    peerGroup = getAnnouncePeerGroup();
-                    contract = storedChannel.contract;
-                    contractStr = contract.getHashAsString();
-                    refund = storedChannel.refund;
-                    valueToMe = storedChannel.valueToMe;
-                    refundStr = refund.getHashAsString();
-                } finally {
-                    unlock();
-                }
-
-                final TransactionConfidence confidence = storedChannel.contract.getConfidence(containingWallet.getContext());
-                final int numConfirms = containingWallet.getContext().getEventHorizon();
-
-                if (valueToMe.equals(Coin.ZERO) && confidence.getDepthInBlocks() >= numConfirms) {
-                    // TODO It should really be detected and removed after a Close transaction.
-                    log.info("Channel {} with established contract exhausted (no value to client) and expired", contractStr);
-                    removeChannel(storedChannel);
-                } else {
-                    // Continue with the timer thread but holding no locks to wallet or extension as we need to talk to peerGroup (lock order is PeerGroup -> Wallet)
-                    try {
-                        // TODO does not seem to work by detecting spent...
-                        if (contract.getOutput(0).isAvailableForSpending()) {
-                            log.debug("TimerTask - contract {} expired but not settled...", contractStr);
-
-                            TransactionBroadcast contractBroadcast = peerGroup.broadcastTransaction(contract);
-                            log.debug("TimerTask - broadcasting contract {}", contractStr);
-                            observeAndLogBroadcast(contractBroadcast, "contract");
-
-                            log.debug("TimerTask - broadcasting refund {}", refundStr);
-                            try {
-                                containingWallet.receivePending(refund, null);
-                            } catch (VerificationException e) {
-                                throw new RuntimeException(e);   // Cannot fail to verify a tx we created ourselves.
-                            }
-                            TransactionBroadcast refundBroadcast = peerGroup.broadcastTransaction(refund);
-                            observeAndLogBroadcast(refundBroadcast, "refund");
-                        } else {
-                            log.debug("TimerTask - contract {} looks spent.", storedChannel.contract.getHashAsString());
-                        }
-
-                    } catch (Exception e) {
-                        // Something went wrong closing the channel - we catch
-                        // here or else we take down the whole Timer.
-                        log.error("Auto-closing channel failed", e);
-                    }
-                }
-            }
-
-        }, expiryTime);
-    }
-
-    private void watchForCloseOrRefundTx(StoredClientChannel storedChannel) {
-        new PaymentChannelWatcher(storedChannel);
-    }
-
-    /** Watch channels that are not active, i.e. has a connection and used by an PaymentChanelClientState object.
-     * Responsible for detecting a close or a refund transaction confirmation pertaining to a channel.
+    /**
+     * Watch a single channel. Responsible for refunding, detecting a dead contract, close or a refund transaction confirmations pertaining to a channel.
      * */
     class PaymentChannelWatcher {
         private final Logger log = LoggerFactory.getLogger(PaymentChannelWatcher.class);
+        private final TransactionConfidence.Listener confidenceListener;
+        private final int eventHorizon = containingWallet.getContext().getEventHorizon();
+        private final TimerTask expiryTask;
+        private final WalletCoinsReceivedEventListener receivedCoinsListener;
 
-        final private StoredClientChannel storedChannel;
+        private PaymentChannelWatcher(final StoredClientChannel storedChannel) {
+            final String contractHash = storedChannel.contract.getHashAsString();
+            log.debug("PaymentChannelWatcher for contract {}", contractHash);
 
-        private Transaction contract() { return storedChannel.contract; }
+            confidenceListener = new TransactionConfidence.Listener() {
+                public void onConfidenceChanged(final TransactionConfidence confidence, ChangeReason reason) {
+                    final Sha256Hash txHash = confidence.getTransactionHash();
+                    if (txHash == storedChannel.contract.getHash()) {
+                        if (reason == ChangeReason.TYPE &&
+                                confidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
+                            storedChannel.lock.lock();
+                            try {
+                                if (storedChannel.overridingTx != null) {
+                                    // maybe a new overriding tx...
+                                    removeListenerFromTx(storedChannel.overridingTx);
+                                }
+                                storedChannel.overridingTx = confidence.getOverridingTransaction();
+                            } finally {
+                                storedChannel.lock.unlock();
+                            }
+                            observeFinalTxConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
+                        }
+                    } else if (confidence.getDepthInBlocks() >= eventHorizon) {
+                        log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
+                                contractHash, getLabel(txHash, storedChannel), txHash, confidence.getDepthInBlocks());
+                        removeChannel(storedChannel);
+                    }
+                }
+            };
 
-        private PaymentChannelWatcher(StoredClientChannel storedChannel) {
-            this.storedChannel = storedChannel;
-            log.debug("PaymentChannelWatcher for contract {}", contract().getHashAsString());
-            init();
-        }
 
-        private void init() {
+
+            final TransactionConfidence contractConfidence = storedChannel.contract.getConfidence(containingWallet.getContext());
+
+            // Will detect if it turns DEAD.
+            contractConfidence.addEventListener(Threading.USER_THREAD, confidenceListener);
+
+            if (contractConfidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
+                storedChannel.overridingTx = contractConfidence.getOverridingTransaction();
+                log.warn("Channel contract {} is DEAD and overridden by {}", contractHash, storedChannel.overridingTx);
+                observeFinalTxConfidence(storedChannel.overridingTx, confidenceListener, contractHash, "overriding");
+            }
             // Register a listener that watches out for the server closing the channel.
             if (storedChannel.close != null) {
-                log.debug("Channel contract {} has close transaction.", contract().getHashAsString());
-                watchTxConfirmations(storedChannel.close, "close");
+                log.debug("Channel contract {} has close transaction.", contractHash);
+                observeFinalTxConfidence(storedChannel.close, confidenceListener, contractHash, "existing close");
             }
             if (storedChannel.expiryTimeSeconds() < Utils.currentTimeSeconds()) {
-                log.debug("Channel contract {} has expired.", contract().getHashAsString());
-                watchTxConfirmations(storedChannel.refund, "refund");
+                log.debug("Channel contract {} has expired.", contractHash);
+                observeFinalTxConfidence(storedChannel.refund, confidenceListener, contractHash, "refund");
             }
 
-            final TransactionConfidence confidence = storedChannel.contract.getConfidence(containingWallet.getContext());
-            synchronized (confidence) {
-                if (confidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
-                    watchTxConfirmations(confidence.getOverridingTransaction(), "overriding");
-                } else {
-                    confidence.addEventListener(Threading.USER_THREAD, new TransactionConfidence.Listener() {
-                        public void onConfidenceChanged(TransactionConfidence confidence, ChangeReason reason) {
-                            if (reason == ChangeReason.TYPE &&
-                                    confidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
-                                watchTxConfirmations(confidence.getOverridingTransaction(), "overriding");
+            Date expiryTime = new Date(storedChannel.expiryTimeSeconds() * 1000 + (System.currentTimeMillis() - Utils.currentTimeMillis()));
+            log.debug("expiryTask for expiry at {} of channel {}", expiryTime, contractHash);
+            expiryTask = new TimerTask() {
+                @Override
+                public void run() {
+                    log.debug("expiryTask for contract {} - running at {}", contractHash, new Date(System.currentTimeMillis()));
+
+                    lock();
+                    storedChannel.lock.lock();
+
+                    final TransactionBroadcaster peerGroup;
+                    final Transaction contract;
+                    final Transaction refund;
+                    final Coin valueToMe;
+                    final String refundStr;
+
+                    try {
+                        peerGroup = getAnnouncePeerGroup();
+                        contract = storedChannel.contract;
+                        refund = storedChannel.refund;
+                        valueToMe = storedChannel.valueToMe;
+                        refundStr = refund.getHashAsString();
+                    } finally {
+                        storedChannel.lock.unlock();
+                        unlock();
+                    }
+
+                    if (valueToMe.equals(Coin.ZERO) && contractConfidence.getDepthInBlocks() >= eventHorizon) {
+                        // TODO It should really be detected and removed after a Close transaction.
+                        log.info("Channel {} with established contract exhausted (no value to client) and expired", contractHash);
+                        removeChannel(storedChannel);
+                    } else {
+                        // Continue with the timer thread but holding no locks to wallet or extension as we need to talk to peerGroup (lock order is PeerGroup -> Wallet)
+                        try {
+                            // TODO does not seem to work by detecting spent...
+                            if (contract.getOutput(0).isAvailableForSpending()) {
+                                log.debug("TimerTask - contract {} expired but not settled...", contractHash);
+
+                                if (contractConfidence.getDepthInBlocks() < eventHorizon) {
+                                    TransactionBroadcast contractBroadcast = peerGroup.broadcastTransaction(contract);
+                                    log.debug("TimerTask - broadcasting contract {}", contractHash);
+                                    observeAndLogBroadcast(contractBroadcast, "contract");
+                                }
+
+                                // This task evaluates at expiry, so even if channel is closed, that was less than eventHorizon
+                                // ago (as then this task would be removed). Send expiry unconditionally for safety.
+                                log.debug("TimerTask - broadcasting refund {}", refundStr);
+                                TransactionBroadcast refundBroadcast = peerGroup.broadcastTransaction(refund);
+                                observeAndLogBroadcast(refundBroadcast, "refund");
+                            } else {
+                                log.debug("TimerTask - contract {} looks spent.", storedChannel.contract.getHashAsString());
                             }
-                        }
-                    });
-                }
-            }
 
-            containingWallet.addCoinsReceivedEventListener(Threading.USER_THREAD, new WalletCoinsReceivedEventListener() {
+                        } catch (Exception e) {
+                            // Something went wrong closing the channel - we catch
+                            // here or else we take down the whole Timer.
+                            log.error("Auto-closing channel failed", e);
+                        }
+                    }
+                }
+
+            };
+
+            channelTimeoutHandler.schedule(expiryTask, expiryTime);
+
+
+            receivedCoinsListener = new WalletCoinsReceivedEventListener() {
                 @Override
                 public void onCoinsReceived(Wallet wallet, Transaction tx, Coin prevBalance, Coin newBalance) {
                     lock();
+                    storedChannel.lock.lock();
                     try {
                         if (storedChannel.active) {
                             log.debug("onCoinsReceived {} isSettlementTransaction={} for contract {} - Channel is active, PaymentChannelClientState is responsible.",
-                                    tx.getHash(), isSettlementTransaction(contract(), tx), contract().getHash());
+                                    tx.getHash(), isSettlementTransaction(storedChannel.contract, tx), contractHash);
                         } else if (tx.getHash() == storedChannel.refund.getHash()) {
                             log.debug("onCoinsReceived refund tx {}", tx.getHash());
-                            watchTxConfirmations(tx, "refund");
-                        } else if (isSettlementTransaction(contract(), tx)) {
-                            log.info("onCoinsReceived settlement tx {} closed contract {}", tx.getHash(), contract().getHashAsString());
+                            observeFinalTxConfidence(storedChannel.refund, confidenceListener, contractHash, "refund");
+                        } else if (isSettlementTransaction(storedChannel.contract, tx)) {
+                            log.info("onCoinsReceived settlement tx {} closed contract {}", tx.getHash(), contractHash);
                             // Record the fact that it was closed along with the transaction that closed it.
                             storedChannel.close = tx;
                             updatedChannel(storedChannel);
-                            watchTxConfirmations(tx, "settlement");
+                            observeFinalTxConfidence(storedChannel.close, confidenceListener, contractHash, "detected close");
                         }
                     } finally {
+                        storedChannel.lock.unlock();
                         unlock();
                     }
                 }
-            });
+            };
+
+            containingWallet.addCoinsReceivedEventListener(Threading.USER_THREAD, receivedCoinsListener);
         }
 
+        void removeListeners(final StoredClientChannel channel) {
+            channel.lock.lock();
+            try {
+                boolean cancelledTimerTask = expiryTask.cancel();
+                if (cancelledTimerTask) log.debug("Cancelled expiry timer for contract {}", channel.contract.getHash());
 
-        private void watchTxConfirmations(final Transaction finalTx, final String label) {
+                removeListenerFromTx(channel.close);
+                removeListenerFromTx(channel.refund);
+                removeListenerFromTx(channel.contract);
+                removeListenerFromTx(channel.overridingTx);
+
+                boolean removed = containingWallet.removeCoinsReceivedEventListener(receivedCoinsListener);
+                if (removed) log.debug("Removed receive coins listener for contract {}", channel.contract.getHash());
+            } finally {
+                channel.lock.unlock();
+            }
+        }
+
+        private void removeListenerFromTx(Transaction tx) {
+            final Context context = containingWallet.getContext();
+            if (tx != null) {
+                boolean removed = tx.getConfidence(context).removeEventListener(confidenceListener);
+                if (removed) log.debug("Removed confidence listener from tx {}", tx.getHash());
+            }
+        }
+
+        private String getLabel(final Sha256Hash txHash, final StoredClientChannel channel) {
+            channel.lock.lock();
+            try {
+                return (channel.close != null) && channel.close.getHash() == txHash ? "close" :
+                        (channel.refund != null) && channel.refund.getHash() == txHash ? "refund" :
+                                (channel.overridingTx != null) && channel.overridingTx.getHash() == txHash ? "overriding contract" : "unknown";
+            } finally {
+                channel.lock.unlock();
+            }
+        }
+
+        private void observeFinalTxConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
             // When we see the transaction get enough confirmations, we can just delete the record
             // of this channel from the wallet, because we're not going to need any of that any more.
-            final TransactionConfidence confidence = finalTx.getConfidence();
-            int numConfirms = containingWallet.getContext().getEventHorizon();
-            log.info("Watching contract {} settling with {} {} of depth = {}, waiting for depth {}",
-                    contract().getHashAsString(), label, finalTx.getHashAsString(),
-                    confidence.getDepthInBlocks(), numConfirms);
-
-            ListenableFuture<TransactionConfidence> future = confidence.getDepthFuture(numConfirms, Threading.USER_THREAD);
-            Futures.addCallback(future, new FutureCallback<TransactionConfidence>() {
-                @Override
-                public void onSuccess(TransactionConfidence result) {
-                    lock();
-                    try {
-                        log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
-                                contract().getHashAsString(), label, finalTx.getHashAsString(), result.getDepthInBlocks());
-                        removeChannel(storedChannel);
-                    } finally {
-                        unlock();
+            final TransactionConfidence txConfidence = finalTx.getConfidence(containingWallet.getContext());
+            final int depth = txConfidence.getDepthInBlocks();
+            log.info("Watching contract {} settling with {} {} of depth = {}", contract, label, finalTx.getHashAsString(), depth);
+            if (depth >= eventHorizon) {
+                log.info("... execute confidence handler as depth is beyond event horizon {}", eventHorizon);
+                Threading.USER_THREAD.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        listener.onConfidenceChanged(txConfidence, TransactionConfidence.Listener.ChangeReason.DEPTH);
                     }
-                }
-
-                @Override
-                public void onFailure(Throwable t) {
-                    Throwables.propagate(t);
-                }
-            });
+                });
+            } else {
+                log.info("...waiting for depth {}", eventHorizon);
+                txConfidence.addEventListener(Threading.USER_THREAD, listener);
+            }
         }
 
         /**
@@ -652,19 +805,25 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
  * when they expire.
  */
 class StoredClientChannel {
-    int majorVersion;
-    Sha256Hash id;
-    Transaction contract, refund;
+    final ReentrantLock lock = Threading.lock("StoredClientChannel");
+
+    final int majorVersion;
+    final Sha256Hash id;
     // The expiry time of the contract in protocol v2.
-    long expiryTime;
+    final long expiryTime;
+    final ECKey myKey;
+    final ECKey serverKey;
+    Transaction contract, refund;
     // The transaction that closed the channel (generated by the server)
     Transaction close;
-    ECKey myKey;
-    ECKey serverKey;
+    // The transaction that overrides the contract if it changes to DEAD.
+    Transaction overridingTx;
+
     Coin valueToMe, refundFees;
 
     // In-memory flag to indicate intent to resume this channel (or that the channel is already in use)
     boolean active = false;
+    StoredPaymentChannelClientStates.PaymentChannelWatcher watcher;
 
     StoredClientChannel(int majorVersion, Sha256Hash id, Transaction contract, Transaction refund, ECKey myKey, ECKey serverKey, Coin valueToMe,
                         Coin refundFees, long expiryTime, boolean active) {
@@ -681,33 +840,44 @@ class StoredClientChannel {
     }
 
     long expiryTimeSeconds() {
-        switch (majorVersion) {
-            case 1:
-                return refund.getLockTime() + 60 * 5;
-            case 2:
-                return expiryTime + 60 * 5;
-            default:
-                throw new IllegalStateException("Invalid version");
+        lock.lock();
+        try {
+
+            switch (majorVersion) {
+                case 1:
+                    return refund.getLockTime() + 60 * 5;
+                case 2:
+                    return expiryTime + 60 * 5;
+                default:
+                    throw new IllegalStateException("Invalid version");
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
     @Override
     public String toString() {
-        final String newline = String.format(Locale.US, "%n");
-        final String closeStr = close == null ? "still open" : close.toString().replaceAll(newline, newline + "   ");
-        return String.format(Locale.US, "Stored client channel for server ID %s (%s)%n" +
-                "    Version:     %d%n" +
-                "    Key:         %s%n" +
-                "    Server key:  %s%n" +
-                "    Value left:  %s%n" +
-                "    Refund fees: %s%n" +
-                "    Expiry     : %s%n" +
-                "    Contract:  %s" +
-                "Refund:    %s" +
-                "Close:     %s",
-                id, active ? "active" : "inactive", majorVersion, myKey, serverKey, valueToMe, refundFees, expiryTime,
-                contract.toString().replaceAll(newline, newline + "    "),
-                refund.toString().replaceAll(newline, newline + "    "),
-                closeStr);
+        lock.lock();
+        try {
+            final String newline = String.format(Locale.US, "%n");
+            final String closeStr = close == null ? "still open" : close.toString().replaceAll(newline, newline + "   ");
+            return String.format(Locale.US, "Stored client channel for server ID %s (%s)%n" +
+                            "    Version:     %d%n" +
+                            "    Key:         %s%n" +
+                            "    Server key:  %s%n" +
+                            "    Value left:  %s%n" +
+                            "    Refund fees: %s%n" +
+                            "    Expiry     : %s%n" +
+                            "    Contract:  %s" +
+                            "Refund:    %s" +
+                            "Close:     %s",
+                    id, active ? "active" : "inactive", majorVersion, myKey, serverKey, valueToMe, refundFees, expiryTime,
+                    contract.toString().replaceAll(newline, newline + "    "),
+                    refund.toString().replaceAll(newline, newline + "    "),
+                    closeStr);
+        } finally {
+            lock.unlock();
+        }
     }
 }

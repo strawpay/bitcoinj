@@ -791,9 +791,7 @@ public final class ClientState {
      * <code>optional bytes closeTransactionHash = 7;</code>
      *
      * <pre>
-     * When set, the hash of the transaction that was presented by the server for closure of the channel.
-     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-     * It's supposed to be in the wallet already.
+     * Deprecated, use closeTransaction instead.
      * </pre>
      */
     boolean hasCloseTransactionHash();
@@ -801,12 +799,31 @@ public final class ClientState {
      * <code>optional bytes closeTransactionHash = 7;</code>
      *
      * <pre>
-     * When set, the hash of the transaction that was presented by the server for closure of the channel.
-     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-     * It's supposed to be in the wallet already.
+     * Deprecated, use closeTransaction instead.
      * </pre>
      */
     com.google.protobuf.ByteString getCloseTransactionHash();
+
+    /**
+     * <code>optional bytes closeTransaction = 12;</code>
+     *
+     * <pre>
+     * When set, the transaction that was presented by the server for closure of the channel.
+     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+     * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+     * </pre>
+     */
+    boolean hasCloseTransaction();
+    /**
+     * <code>optional bytes closeTransaction = 12;</code>
+     *
+     * <pre>
+     * When set, the transaction that was presented by the server for closure of the channel.
+     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+     * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+     * </pre>
+     */
+    com.google.protobuf.ByteString getCloseTransaction();
 
     /**
      * <code>optional uint32 majorVersion = 9 [default = 1];</code>
@@ -949,18 +966,23 @@ public final class ClientState {
               break;
             }
             case 72: {
-              bitField0_ |= 0x00000100;
+              bitField0_ |= 0x00000200;
               majorVersion_ = input.readUInt32();
               break;
             }
             case 80: {
-              bitField0_ |= 0x00000200;
+              bitField0_ |= 0x00000400;
               expiryTime_ = input.readUInt64();
               break;
             }
             case 90: {
-              bitField0_ |= 0x00000400;
+              bitField0_ |= 0x00000800;
               serverKey_ = input.readBytes();
+              break;
+            }
+            case 98: {
+              bitField0_ |= 0x00000100;
+              closeTransaction_ = input.readBytes();
               break;
             }
           }
@@ -1130,9 +1152,7 @@ public final class ClientState {
      * <code>optional bytes closeTransactionHash = 7;</code>
      *
      * <pre>
-     * When set, the hash of the transaction that was presented by the server for closure of the channel.
-     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-     * It's supposed to be in the wallet already.
+     * Deprecated, use closeTransaction instead.
      * </pre>
      */
     public boolean hasCloseTransactionHash() {
@@ -1142,13 +1162,38 @@ public final class ClientState {
      * <code>optional bytes closeTransactionHash = 7;</code>
      *
      * <pre>
-     * When set, the hash of the transaction that was presented by the server for closure of the channel.
-     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-     * It's supposed to be in the wallet already.
+     * Deprecated, use closeTransaction instead.
      * </pre>
      */
     public com.google.protobuf.ByteString getCloseTransactionHash() {
       return closeTransactionHash_;
+    }
+
+    public static final int CLOSETRANSACTION_FIELD_NUMBER = 12;
+    private com.google.protobuf.ByteString closeTransaction_;
+    /**
+     * <code>optional bytes closeTransaction = 12;</code>
+     *
+     * <pre>
+     * When set, the transaction that was presented by the server for closure of the channel.
+     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+     * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+     * </pre>
+     */
+    public boolean hasCloseTransaction() {
+      return ((bitField0_ & 0x00000100) == 0x00000100);
+    }
+    /**
+     * <code>optional bytes closeTransaction = 12;</code>
+     *
+     * <pre>
+     * When set, the transaction that was presented by the server for closure of the channel.
+     * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+     * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+     * </pre>
+     */
+    public com.google.protobuf.ByteString getCloseTransaction() {
+      return closeTransaction_;
     }
 
     public static final int MAJORVERSION_FIELD_NUMBER = 9;
@@ -1157,7 +1202,7 @@ public final class ClientState {
      * <code>optional uint32 majorVersion = 9 [default = 1];</code>
      */
     public boolean hasMajorVersion() {
-      return ((bitField0_ & 0x00000100) == 0x00000100);
+      return ((bitField0_ & 0x00000200) == 0x00000200);
     }
     /**
      * <code>optional uint32 majorVersion = 9 [default = 1];</code>
@@ -1176,7 +1221,7 @@ public final class ClientState {
      * </pre>
      */
     public boolean hasExpiryTime() {
-      return ((bitField0_ & 0x00000200) == 0x00000200);
+      return ((bitField0_ & 0x00000400) == 0x00000400);
     }
     /**
      * <code>optional uint64 expiryTime = 10;</code>
@@ -1199,7 +1244,7 @@ public final class ClientState {
      * </pre>
      */
     public boolean hasServerKey() {
-      return ((bitField0_ & 0x00000400) == 0x00000400);
+      return ((bitField0_ & 0x00000800) == 0x00000800);
     }
     /**
      * <code>optional bytes serverKey = 11;</code>
@@ -1221,6 +1266,7 @@ public final class ClientState {
       valueToMe_ = 0L;
       refundFees_ = 0L;
       closeTransactionHash_ = com.google.protobuf.ByteString.EMPTY;
+      closeTransaction_ = com.google.protobuf.ByteString.EMPTY;
       majorVersion_ = 1;
       expiryTime_ = 0L;
       serverKey_ = com.google.protobuf.ByteString.EMPTY;
@@ -1290,14 +1336,17 @@ public final class ClientState {
       if (((bitField0_ & 0x00000008) == 0x00000008)) {
         output.writeBytes(8, myPublicKey_);
       }
-      if (((bitField0_ & 0x00000100) == 0x00000100)) {
+      if (((bitField0_ & 0x00000200) == 0x00000200)) {
         output.writeUInt32(9, majorVersion_);
       }
-      if (((bitField0_ & 0x00000200) == 0x00000200)) {
+      if (((bitField0_ & 0x00000400) == 0x00000400)) {
         output.writeUInt64(10, expiryTime_);
       }
-      if (((bitField0_ & 0x00000400) == 0x00000400)) {
+      if (((bitField0_ & 0x00000800) == 0x00000800)) {
         output.writeBytes(11, serverKey_);
+      }
+      if (((bitField0_ & 0x00000100) == 0x00000100)) {
+        output.writeBytes(12, closeTransaction_);
       }
       getUnknownFields().writeTo(output);
     }
@@ -1340,17 +1389,21 @@ public final class ClientState {
         size += com.google.protobuf.CodedOutputStream
           .computeBytesSize(8, myPublicKey_);
       }
-      if (((bitField0_ & 0x00000100) == 0x00000100)) {
+      if (((bitField0_ & 0x00000200) == 0x00000200)) {
         size += com.google.protobuf.CodedOutputStream
           .computeUInt32Size(9, majorVersion_);
       }
-      if (((bitField0_ & 0x00000200) == 0x00000200)) {
+      if (((bitField0_ & 0x00000400) == 0x00000400)) {
         size += com.google.protobuf.CodedOutputStream
           .computeUInt64Size(10, expiryTime_);
       }
-      if (((bitField0_ & 0x00000400) == 0x00000400)) {
+      if (((bitField0_ & 0x00000800) == 0x00000800)) {
         size += com.google.protobuf.CodedOutputStream
           .computeBytesSize(11, serverKey_);
+      }
+      if (((bitField0_ & 0x00000100) == 0x00000100)) {
+        size += com.google.protobuf.CodedOutputStream
+          .computeBytesSize(12, closeTransaction_);
       }
       size += getUnknownFields().getSerializedSize();
       memoizedSerializedSize = size;
@@ -1490,12 +1543,14 @@ public final class ClientState {
         bitField0_ = (bitField0_ & ~0x00000040);
         closeTransactionHash_ = com.google.protobuf.ByteString.EMPTY;
         bitField0_ = (bitField0_ & ~0x00000080);
-        majorVersion_ = 1;
+        closeTransaction_ = com.google.protobuf.ByteString.EMPTY;
         bitField0_ = (bitField0_ & ~0x00000100);
-        expiryTime_ = 0L;
+        majorVersion_ = 1;
         bitField0_ = (bitField0_ & ~0x00000200);
-        serverKey_ = com.google.protobuf.ByteString.EMPTY;
+        expiryTime_ = 0L;
         bitField0_ = (bitField0_ & ~0x00000400);
+        serverKey_ = com.google.protobuf.ByteString.EMPTY;
+        bitField0_ = (bitField0_ & ~0x00000800);
         return this;
       }
 
@@ -1559,13 +1614,17 @@ public final class ClientState {
         if (((from_bitField0_ & 0x00000100) == 0x00000100)) {
           to_bitField0_ |= 0x00000100;
         }
-        result.majorVersion_ = majorVersion_;
+        result.closeTransaction_ = closeTransaction_;
         if (((from_bitField0_ & 0x00000200) == 0x00000200)) {
           to_bitField0_ |= 0x00000200;
         }
-        result.expiryTime_ = expiryTime_;
+        result.majorVersion_ = majorVersion_;
         if (((from_bitField0_ & 0x00000400) == 0x00000400)) {
           to_bitField0_ |= 0x00000400;
+        }
+        result.expiryTime_ = expiryTime_;
+        if (((from_bitField0_ & 0x00000800) == 0x00000800)) {
+          to_bitField0_ |= 0x00000800;
         }
         result.serverKey_ = serverKey_;
         result.bitField0_ = to_bitField0_;
@@ -1607,6 +1666,9 @@ public final class ClientState {
         }
         if (other.hasCloseTransactionHash()) {
           setCloseTransactionHash(other.getCloseTransactionHash());
+        }
+        if (other.hasCloseTransaction()) {
+          setCloseTransaction(other.getCloseTransaction());
         }
         if (other.hasMajorVersion()) {
           setMajorVersion(other.getMajorVersion());
@@ -1948,9 +2010,7 @@ public final class ClientState {
        * <code>optional bytes closeTransactionHash = 7;</code>
        *
        * <pre>
-       * When set, the hash of the transaction that was presented by the server for closure of the channel.
-       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-       * It's supposed to be in the wallet already.
+       * Deprecated, use closeTransaction instead.
        * </pre>
        */
       public boolean hasCloseTransactionHash() {
@@ -1960,9 +2020,7 @@ public final class ClientState {
        * <code>optional bytes closeTransactionHash = 7;</code>
        *
        * <pre>
-       * When set, the hash of the transaction that was presented by the server for closure of the channel.
-       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-       * It's supposed to be in the wallet already.
+       * Deprecated, use closeTransaction instead.
        * </pre>
        */
       public com.google.protobuf.ByteString getCloseTransactionHash() {
@@ -1972,9 +2030,7 @@ public final class ClientState {
        * <code>optional bytes closeTransactionHash = 7;</code>
        *
        * <pre>
-       * When set, the hash of the transaction that was presented by the server for closure of the channel.
-       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-       * It's supposed to be in the wallet already.
+       * Deprecated, use closeTransaction instead.
        * </pre>
        */
       public Builder setCloseTransactionHash(com.google.protobuf.ByteString value) {
@@ -1990,9 +2046,7 @@ public final class ClientState {
        * <code>optional bytes closeTransactionHash = 7;</code>
        *
        * <pre>
-       * When set, the hash of the transaction that was presented by the server for closure of the channel.
-       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
-       * It's supposed to be in the wallet already.
+       * Deprecated, use closeTransaction instead.
        * </pre>
        */
       public Builder clearCloseTransactionHash() {
@@ -2002,12 +2056,71 @@ public final class ClientState {
         return this;
       }
 
+      private com.google.protobuf.ByteString closeTransaction_ = com.google.protobuf.ByteString.EMPTY;
+      /**
+       * <code>optional bytes closeTransaction = 12;</code>
+       *
+       * <pre>
+       * When set, the transaction that was presented by the server for closure of the channel.
+       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+       * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+       * </pre>
+       */
+      public boolean hasCloseTransaction() {
+        return ((bitField0_ & 0x00000100) == 0x00000100);
+      }
+      /**
+       * <code>optional bytes closeTransaction = 12;</code>
+       *
+       * <pre>
+       * When set, the transaction that was presented by the server for closure of the channel.
+       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+       * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+       * </pre>
+       */
+      public com.google.protobuf.ByteString getCloseTransaction() {
+        return closeTransaction_;
+      }
+      /**
+       * <code>optional bytes closeTransaction = 12;</code>
+       *
+       * <pre>
+       * When set, the transaction that was presented by the server for closure of the channel.
+       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+       * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+       * </pre>
+       */
+      public Builder setCloseTransaction(com.google.protobuf.ByteString value) {
+        if (value == null) {
+    throw new NullPointerException();
+  }
+  bitField0_ |= 0x00000100;
+        closeTransaction_ = value;
+        onChanged();
+        return this;
+      }
+      /**
+       * <code>optional bytes closeTransaction = 12;</code>
+       *
+       * <pre>
+       * When set, the transaction that was presented by the server for closure of the channel.
+       * It spends the contractTransaction and is expected to be broadcast to the network by the server.
+       * It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+       * </pre>
+       */
+      public Builder clearCloseTransaction() {
+        bitField0_ = (bitField0_ & ~0x00000100);
+        closeTransaction_ = getDefaultInstance().getCloseTransaction();
+        onChanged();
+        return this;
+      }
+
       private int majorVersion_ = 1;
       /**
        * <code>optional uint32 majorVersion = 9 [default = 1];</code>
        */
       public boolean hasMajorVersion() {
-        return ((bitField0_ & 0x00000100) == 0x00000100);
+        return ((bitField0_ & 0x00000200) == 0x00000200);
       }
       /**
        * <code>optional uint32 majorVersion = 9 [default = 1];</code>
@@ -2019,7 +2132,7 @@ public final class ClientState {
        * <code>optional uint32 majorVersion = 9 [default = 1];</code>
        */
       public Builder setMajorVersion(int value) {
-        bitField0_ |= 0x00000100;
+        bitField0_ |= 0x00000200;
         majorVersion_ = value;
         onChanged();
         return this;
@@ -2028,7 +2141,7 @@ public final class ClientState {
        * <code>optional uint32 majorVersion = 9 [default = 1];</code>
        */
       public Builder clearMajorVersion() {
-        bitField0_ = (bitField0_ & ~0x00000100);
+        bitField0_ = (bitField0_ & ~0x00000200);
         majorVersion_ = 1;
         onChanged();
         return this;
@@ -2043,7 +2156,7 @@ public final class ClientState {
        * </pre>
        */
       public boolean hasExpiryTime() {
-        return ((bitField0_ & 0x00000200) == 0x00000200);
+        return ((bitField0_ & 0x00000400) == 0x00000400);
       }
       /**
        * <code>optional uint64 expiryTime = 10;</code>
@@ -2063,7 +2176,7 @@ public final class ClientState {
        * </pre>
        */
       public Builder setExpiryTime(long value) {
-        bitField0_ |= 0x00000200;
+        bitField0_ |= 0x00000400;
         expiryTime_ = value;
         onChanged();
         return this;
@@ -2076,7 +2189,7 @@ public final class ClientState {
        * </pre>
        */
       public Builder clearExpiryTime() {
-        bitField0_ = (bitField0_ & ~0x00000200);
+        bitField0_ = (bitField0_ & ~0x00000400);
         expiryTime_ = 0L;
         onChanged();
         return this;
@@ -2091,7 +2204,7 @@ public final class ClientState {
        * </pre>
        */
       public boolean hasServerKey() {
-        return ((bitField0_ & 0x00000400) == 0x00000400);
+        return ((bitField0_ & 0x00000800) == 0x00000800);
       }
       /**
        * <code>optional bytes serverKey = 11;</code>
@@ -2114,7 +2227,7 @@ public final class ClientState {
         if (value == null) {
     throw new NullPointerException();
   }
-  bitField0_ |= 0x00000400;
+  bitField0_ |= 0x00000800;
         serverKey_ = value;
         onChanged();
         return this;
@@ -2127,7 +2240,7 @@ public final class ClientState {
        * </pre>
        */
       public Builder clearServerKey() {
-        bitField0_ = (bitField0_ & ~0x00000400);
+        bitField0_ = (bitField0_ & ~0x00000800);
         serverKey_ = getDefaultInstance().getServerKey();
         onChanged();
         return this;
@@ -2166,15 +2279,16 @@ public final class ClientState {
       "\n storedclientpaymentchannel.proto\022\017paym" +
       "entchannels\"\\\n\033StoredClientPaymentChanne" +
       "ls\022=\n\010channels\030\001 \003(\0132+.paymentchannels.S" +
-      "toredClientPaymentChannel\"\211\002\n\032StoredClie" +
+      "toredClientPaymentChannel\"\243\002\n\032StoredClie" +
       "ntPaymentChannel\022\n\n\002id\030\001 \002(\014\022\033\n\023contract" +
       "Transaction\030\002 \002(\014\022\031\n\021refundTransaction\030\003" +
       " \002(\014\022\023\n\013myPublicKey\030\010 \002(\014\022\r\n\005myKey\030\004 \002(\014" +
       "\022\021\n\tvalueToMe\030\005 \002(\004\022\022\n\nrefundFees\030\006 \002(\004\022" +
-      "\034\n\024closeTransactionHash\030\007 \001(\014\022\027\n\014majorVe" +
-      "rsion\030\t \001(\r:\0011\022\022\n\nexpiryTime\030\n \001(\004\022\021\n\tse",
-      "rverKey\030\013 \001(\014B.\n\037org.bitcoinj.protocols." +
-      "channelsB\013ClientState"
+      "\034\n\024closeTransactionHash\030\007 \001(\014\022\030\n\020closeTr" +
+      "ansaction\030\014 \001(\014\022\027\n\014majorVersion\030\t \001(\r:\0011",
+      "\022\022\n\nexpiryTime\030\n \001(\004\022\021\n\tserverKey\030\013 \001(\014B" +
+      ".\n\037org.bitcoinj.protocols.channelsB\013Clie" +
+      "ntState"
     };
     com.google.protobuf.Descriptors.FileDescriptor.InternalDescriptorAssigner assigner =
         new com.google.protobuf.Descriptors.FileDescriptor.    InternalDescriptorAssigner() {
@@ -2199,7 +2313,7 @@ public final class ClientState {
     internal_static_paymentchannels_StoredClientPaymentChannel_fieldAccessorTable = new
       com.google.protobuf.GeneratedMessage.FieldAccessorTable(
         internal_static_paymentchannels_StoredClientPaymentChannel_descriptor,
-        new java.lang.String[] { "Id", "ContractTransaction", "RefundTransaction", "MyPublicKey", "MyKey", "ValueToMe", "RefundFees", "CloseTransactionHash", "MajorVersion", "ExpiryTime", "ServerKey", });
+        new java.lang.String[] { "Id", "ContractTransaction", "RefundTransaction", "MyPublicKey", "MyKey", "ValueToMe", "RefundFees", "CloseTransactionHash", "CloseTransaction", "MajorVersion", "ExpiryTime", "ServerKey", });
   }
 
   // @@protoc_insertion_point(outer_class_scope)

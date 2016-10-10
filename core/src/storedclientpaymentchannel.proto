@@ -45,10 +45,12 @@ message StoredClientPaymentChannel {
 	required uint64 valueToMe = 5;
 	// Fees required to refund the transaction.
 	required uint64 refundFees = 6;
-	// When set, the hash of the transaction that was presented by the server for closure of the channel.
-	// It spends the contractTransaction and is expected to be broadcast to the network by the server.
-	// It's supposed to be in the wallet already.
+	// Deprecated, use closeTransaction instead.
 	optional bytes closeTransactionHash = 7;
+	// When set, the transaction that was presented by the server for closure of the channel.
+	// It spends the contractTransaction and is expected to be broadcast to the network by the server.
+	// It will only be in the wallet if it is relevant to the wallet, i.e. contains an output spendable by client.
+	optional bytes closeTransaction = 12;
 	optional uint32 majorVersion = 9 [default = 1];
 	// The expiry time of the CLTV lock. Only used in protocol v2.
 	optional uint64 expiryTime = 10;

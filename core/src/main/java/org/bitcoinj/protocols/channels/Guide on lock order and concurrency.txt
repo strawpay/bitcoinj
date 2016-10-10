@@ -36,7 +36,7 @@ and follow a few rules that are described here:
     lock.lock(); 
     try {
     	...
-    	read/update state
+    	read and/or update state
 	...
     } finally {
       	lock.unlock();
@@ -81,12 +81,17 @@ Client:
 
 * PaymentChannelClient.lock -> Wallet.lock
 * PaymentChannelClient.lock -> PaymentChannelClientState.lock
+* PaymentChannelClient.lock -> StoredPaymentChannelClientStates.lock
+* PaymentChannelClient.lock -> StoredClientChannel.lock
 
 * PaymentChannelClientState.lock -> Wallet.lock
 * PaymentChannelClientState.lock -> StoredPaymentChannelClientStates.lock
+* PaymentChannelClientState.lock -> StoredClientChannel.lock
+
+* StoredPaymentChannelClientStates.lock -> StoredClientChannel.lock
 
 To strictly follow this ordering the wallet lock may be acquired
-ahead of a call to the wallet. This is done by the helper methods on wallet:
+ahead of a call to the wallet. This is done by the two helper methods introduced on Wallet:
 
     public void lockWalletAndThen(ReentrantLock lockAfterWalletLock) 
     public void unlockLockAndThenWallet(ReentrantLock unlockBeforeWalletLock)
