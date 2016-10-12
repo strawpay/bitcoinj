@@ -426,13 +426,13 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         private final TimerTask autoCloseTask;
 
         private PaymentChannelWatcher(final StoredServerChannel storedChannel) {
-            final String contractHash = storedChannel.contract.getHashAsString();
+            final Sha256Hash contractHash = storedChannel.contract.getHash();
             log.debug("PaymentChannelWatcher for contract {}", contractHash);
 
             confidenceListener = new TransactionConfidence.Listener() {
                 public void onConfidenceChanged(final TransactionConfidence confidence, ChangeReason reason) {
                     final Sha256Hash txHash = confidence.getTransactionHash();
-                    if (txHash == storedChannel.contract.getHash()) {
+                    if (txHash.equals(storedChannel.contract.getHash())) {
                         if (reason == ChangeReason.TYPE &&
                                 confidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
                             storedChannel.lock.lock();
@@ -448,9 +448,15 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
                             observeFinalTxConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
                         }
                     } else if (confidence.getDepthInBlocks() >= eventHorizon) {
-                        log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
-                                contractHash, getLabel(txHash, storedChannel), txHash, confidence.getDepthInBlocks());
-                        removeChannel(storedChannel.contract.getHash());
+                        // TODO We should detect and watch if a refund tx occurs also.
+                        String detectedTransactionType = detectTerminatingTransactionType(storedChannel, txHash);
+                        if (detectedTransactionType != null) {
+                            log.info("Deleting channel {} from wallet when {} tx {} is safely confirmed, depth = {}",
+                                    contractHash, detectedTransactionType, txHash, confidence.getDepthInBlocks());
+                            removeChannel(contractHash);
+                        } else {
+                            log.warn("Detecting unknown transaction {} when watching contract {}", txHash, contractHash);
+                        }
                     }
                 }
             };
@@ -494,6 +500,16 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             channelTimeoutHandler.schedule(autoCloseTask, autocloseTime);
         }
 
+        private String detectTerminatingTransactionType(StoredServerChannel ch, Sha256Hash txHash) {
+            ch.lock.lock();
+            try {
+                return (ch.getCloseTransaction() != null) && ch.getCloseTransaction().getHash().equals(txHash) ? "close" :
+                        (ch.overridingTx != null) && ch.overridingTx.getHash().equals(txHash) ? "overriding contract" : null;
+            } finally {
+                ch.lock.unlock();
+            }
+        }
+
         void removeListeners(final StoredServerChannel channel) {
             channel.lock.lock();
             try {
@@ -517,17 +533,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
             }
         }
 
-        private String getLabel(final Sha256Hash txHash, final StoredServerChannel channel) {
-            channel.lock.lock();
-            try {
-                return (channel.getCloseTransaction() != null) && channel.getCloseTransaction().getHash() == txHash ? "close" :
-                        (channel.overridingTx != null) && channel.overridingTx.getHash() == txHash ? "overriding contract" : "unknown";
-            } finally {
-                channel.lock.unlock();
-            }
-        }
-
-        private void observeFinalTxConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final String contract, final String label) {
+        private void observeFinalTxConfidence(final Transaction finalTx, final TransactionConfidence.Listener listener, final Sha256Hash contract, final String label) {
             // When we see the transaction get enough confirmations, we can just delete the record
             // of this channel from the wallet, because we're not going to need any of that any more.
             final TransactionConfidence txConfidence = finalTx.getConfidence(wallet.getContext());

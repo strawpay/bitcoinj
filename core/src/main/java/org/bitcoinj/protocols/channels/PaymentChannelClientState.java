@@ -201,7 +201,7 @@ public abstract class PaymentChannelClientState {
                         if (getContractInternal() == null) {
                             // no contract
                             log.debug("No contract");
-                        } else if (storedChannel != null && tx.getHash() == storedChannel.refund.getHash()) {
+                        } else if (storedChannel != null && tx.getHash().equals(storedChannel.refund.getHash())) {
                             log.warn("Detected refund transaction when active for channel {}",
                                     getContractInternal().getHash());
                         } else if (isSettlementTransaction(tx)) {

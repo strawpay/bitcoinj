@@ -584,7 +584,7 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             confidenceListener = new TransactionConfidence.Listener() {
                 public void onConfidenceChanged(final TransactionConfidence confidence, ChangeReason reason) {
                     final Sha256Hash txHash = confidence.getTransactionHash();
-                    if (txHash == storedChannel.contract.getHash()) {
+                    if (txHash.equals(storedChannel.contract.getHash())) {
                         if (reason == ChangeReason.TYPE &&
                                 confidence.getConfidenceType() == TransactionConfidence.ConfidenceType.DEAD) {
                             storedChannel.lock.lock();
@@ -600,9 +600,14 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
                             observeFinalTxConfidence(storedChannel.overridingTx, this, contractHash, "overriding");
                         }
                     } else if (confidence.getDepthInBlocks() >= eventHorizon) {
-                        log.info("Deleting channel from wallet: {} when {} {} is safely confirmed, depth = {}",
-                                contractHash, getLabel(txHash, storedChannel), txHash, confidence.getDepthInBlocks());
-                        removeChannel(storedChannel);
+                        String detectedTransactionType = detectTerminatingTransactionType(storedChannel, txHash);
+                        if (detectedTransactionType != null) {
+                            log.info("Deleting channel {} from wallet when {} tx {} is safely confirmed, depth = {}",
+                                    contractHash, detectedTransactionType, txHash, confidence.getDepthInBlocks());
+                            removeChannel(storedChannel);
+                        } else {
+                            log.warn("Detecting unknown transaction {} when watching contract {}", txHash, contractHash);
+                        }
                     }
                 }
             };
@@ -724,6 +729,17 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             containingWallet.addCoinsReceivedEventListener(Threading.USER_THREAD, receivedCoinsListener);
         }
 
+        private String detectTerminatingTransactionType(StoredClientChannel ch, Sha256Hash txHash) {
+            ch.lock.lock();
+            try {
+                return (ch.close != null) && ch.close.getHash().equals(txHash) ? "close" :
+                        (ch.refund != null) && ch.refund.getHash().equals(txHash) ? "refund" :
+                                (ch.overridingTx != null) && ch.overridingTx.getHash().equals(txHash) ? "overriding contract" : null;
+            } finally {
+                ch.lock.unlock();
+            }
+        }
+
         void removeListeners(final StoredClientChannel channel) {
             channel.lock.lock();
             try {
@@ -747,17 +763,6 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
             if (tx != null) {
                 boolean removed = tx.getConfidence(context).removeEventListener(confidenceListener);
                 if (removed) log.debug("Removed confidence listener from tx {}", tx.getHash());
-            }
-        }
-
-        private String getLabel(final Sha256Hash txHash, final StoredClientChannel channel) {
-            channel.lock.lock();
-            try {
-                return (channel.close != null) && channel.close.getHash() == txHash ? "close" :
-                        (channel.refund != null) && channel.refund.getHash() == txHash ? "refund" :
-                                (channel.overridingTx != null) && channel.overridingTx.getHash() == txHash ? "overriding contract" : "unknown";
-            } finally {
-                channel.lock.unlock();
             }
         }
 
