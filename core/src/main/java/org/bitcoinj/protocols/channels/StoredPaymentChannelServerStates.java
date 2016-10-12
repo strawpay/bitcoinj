@@ -279,6 +279,7 @@ public class StoredPaymentChannelServerStates implements WalletExtension {
         lock.lock();
         try {
             checkArgument(mapChannels.put(channel.contract.getHash(), checkNotNull(channel)) == null);
+            log.info("Added channel to map: {}", channel);
         } finally {
             lock.unlock();
         }

@@ -343,7 +343,9 @@ public class StoredPaymentChannelClientStates implements WalletExtension {
         channel.lock.lock();
         try {
             log.debug("putChannel {}", channel.contract.getHashAsString());
-            mapChannels.put(channel.id, channel);
+            boolean addedNewChannel = mapChannels.put(channel.id, channel);
+            if (addedNewChannel)
+                log.info("Added channel to map: {}", channel);
         } catch (Exception e) {
             log.error("putChannel failed", e);
         } finally {
