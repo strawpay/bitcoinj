@@ -605,7 +605,9 @@ public class WalletProtobufSerializer {
                         throw new UnreadableWalletException("Could not parse mandatory extension in wallet: " + id);
                     } else if (requireAllExtensionsKnown) {
                         log.error("Error whilst reading extension {}, failing to read wallet", id);
-                        throw new UnreadableWalletException("Could not parse mandatory extension in wallet: " + id);
+                        throw new UnreadableWalletException("Could not parse extension in wallet: " + id);
+                    } else {
+                        log.warn("Error whilst reading extension {}, ignoring extension", id, e);
                     }
                 }
             }
